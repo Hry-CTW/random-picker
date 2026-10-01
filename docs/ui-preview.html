@@ -299,11 +299,14 @@ function pickN(n){
   const avail=idx.length;
   if(n<=0){ say('人数要大于 0'); return; }
   if(n>avail){ say('这个范围现在只能抽 '+avail+' 人，填的 '+n+' 太多了'); return; }
+  // 部分 Fisher–Yates：与 roster.cpp pickMulti 同构。
+  // 关键点：每步的随机范围是【候选池剩余长度 idx.length - s】，不是「要抽的人数 n - s」。
+  // 写成 n - s 会让随机范围固定在池头前 n 个元素，抽出来永远是一组/二组/三组各一个人。
   const seeds=[]; const out=[];
   for(let s=0;s<n;s++){
     const sd=seed16(); seeds.push(sd);
-    const j=Math.floor(Math.random()*(n-s));
-    const t=idx[s]; idx[s]=idx[s+j]; idx[s+j]=t;
+    const j=s+Math.floor(Math.random()*(idx.length-s));
+    const t=idx[s]; idx[s]=idx[j]; idx[j]=t;
     out.push(people[idx[s]]);
     if(noRepeat) drawn.add(people[idx[s]].zh);
   }
