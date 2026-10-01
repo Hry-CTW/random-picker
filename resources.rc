@@ -1,0 +1,5 @@
+// 资源：CTW 标（CreateTheWorld）
+// 1  = exe / 标题栏图标（多尺寸 ico）
+// 201 = 右上角徽标用 PNG（GDI+ 绘制，保留透明通道）
+1 ICON "assets/ctw.ico"
+201 RCDATA "assets/icon_dark.png"

@@ -1,0 +1,24 @@
+# ── 含真实学生姓名的数据，一律不得提交 ──
+名单.csv
+Students.txt
+roster.json
+history.txt
+*名单_真实*
+
+# ── 构建产物 ──
+picker.exe
+picker_cli
+resources.o
+*.o
+*.obj
+*.exe
+build/
+CMakeFiles/
+CMakeCache.txt
+
+# ── 系统 / 编辑器 ──
+.DS_Store
+._*
+Thumbs.db
+.vscode/
+.idea/
