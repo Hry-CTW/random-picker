@@ -554,8 +554,10 @@ static std::vector<std::vector<std::wstring>> parseXlsx(const std::string& data,
 
 // ---------- Roster ----------
 
+// 组序：先按固定组序 groups（允许空组，v2 一键 6 组后可见），
+// 再补名单里出现、但不在固定组序里的组（例如导入得到的「三组」「未分组」）
 std::vector<std::wstring> Roster::groupList() const {
-    std::vector<std::wstring> gs;
+    std::vector<std::wstring> gs = groups;
     for (const Person& p : people) {
         std::wstring g = p.group.empty() ? L"未分组" : p.group;
         if (std::find(gs.begin(), gs.end(), g) == gs.end()) gs.push_back(g);
@@ -563,32 +565,48 @@ std::vector<std::wstring> Roster::groupList() const {
     return gs;
 }
 
+int Roster::countInGroup(const std::wstring& g) const {
+    int n = 0;
+    for (const Person& p : people) {
+        std::wstring pg = p.group.empty() ? L"未分组" : p.group;
+        if (pg == g) n++;
+    }
+    return n;
+}
+
+// 空组别统一按「未分组」参与比较，避免名单里留空的成员在分组页签里被漏掉
+static std::wstring normGroup(const std::wstring& g) { return g.empty() ? L"未分组" : g; }
+
 int Roster::countInScope(int scope) const {
     auto gs = groupList();
     int n = 0;
     for (const Person& p : people) {
-        if (scope >= 0 && scope < (int)gs.size() && p.group != gs[scope]) continue;
+        if (scope >= 0 && scope < (int)gs.size() && normGroup(p.group) != gs[scope]) continue;
         if (noRepeat && drawn.count(p.name)) continue;
         n++;
     }
     return n;
 }
 
-PickResult Roster::pick(int scope) {
-    PickResult r;
-    auto gs = groupList();
+// 收集「当前范围 + 防重复」下的候选下标
+static std::vector<int> collectCands(const std::vector<Person>& people, const std::vector<std::wstring>& gs,
+                                     int scope, const std::set<std::wstring>& drawn, bool noRepeat) {
     std::vector<int> cand;
     for (int i = 0; i < (int)people.size(); i++) {
-        if (scope >= 0 && scope < (int)gs.size() && people[i].group != gs[scope]) continue;
+        if (scope >= 0 && scope < (int)gs.size() && normGroup(people[i].group) != gs[scope]) continue;
         if (noRepeat && drawn.count(people[i].name)) continue;
         cand.push_back(i);
     }
+    return cand;
+}
+
+PickResult Roster::pick(int scope) {
+    PickResult r;
+    auto gs = groupList();
+    std::vector<int> cand = collectCands(people, gs, scope, drawn, noRepeat);
     if (cand.empty() && noRepeat && !people.empty()) {
         drawn.clear();
-        for (int i = 0; i < (int)people.size(); i++) {
-            if (scope >= 0 && scope < (int)gs.size() && people[i].group != gs[scope]) continue;
-            cand.push_back(i);
-        }
+        cand = collectCands(people, gs, scope, drawn, noRepeat);
     }
     if (cand.empty()) return r;
     uint64_t seed = csRand64();
@@ -621,6 +639,134 @@ PickResult Roster::pickGroup() {
     history.push_back(nowStamp() + L"  [组] " + gs[k] + L"  seed=" + r.seed);
     if (history.size() > 200) history.erase(history.begin());
     return r;
+}
+
+// 一次抽 N 人：
+//  · 范围内不重复（不是抽 N 次，是一次抽出 N 个不同的人）
+//  · N 大于可抽人数时静默截断是耍流氓，这里直接回人话提示，让使用者自己决定改小还是重置
+//  · 洗牌用到的每个随机数原值都记进 seeds，事后可复现
+MultiResult Roster::pickMulti(int scope, int n) {
+    MultiResult r;
+    auto gs = groupList();
+    if (n <= 0) {
+        r.msg = L"人数填错了，至少填 1";
+        return r;
+    }
+    std::vector<int> cand = collectCands(people, gs, scope, drawn, noRepeat);
+    if (cand.empty() && noRepeat && !people.empty()) {
+        drawn.clear();
+        cand = collectCands(people, gs, scope, drawn, noRepeat);
+    }
+    if (cand.empty()) {
+        r.msg = L"当前范围内没有可抽的人，先导入名单";
+        return r;
+    }
+    if (n > (int)cand.size()) {
+        r.msg = L"这个范围现在只能抽 " + std::to_wstring(cand.size()) + L" 人，填的 " +
+                std::to_wstring(n) + L" 太多了。把人数改小，或者按 R 重置抽取记录再来。";
+        return r;
+    }
+    // 部分 Fisher–Yates：只洗前 n 个位置，O(n)，且保证等概率
+    std::vector<uint64_t> rec;
+    for (int i = 0; i < n; i++) {
+        uint64_t limit = ~0ULL - (~0ULL % (uint64_t)(cand.size() - i));
+        uint64_t v;
+        do { v = csRand64(); } while (v >= limit);
+        rec.push_back(v);
+        int k = i + (int)(v % (uint64_t)(cand.size() - i));
+        std::swap(cand[i], cand[k]);
+    }
+    std::wstring seeds, names;
+    for (int i = 0; i < n; i++) {
+        Person p = people[cand[i]];
+        if (noRepeat) drawn.insert(p.name);
+        r.people.push_back(p);
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)rec[i]);
+        if (i) seeds += L" ";
+        seeds += utf8_to_wide(std::string(buf));
+        if (i) names += L"、";
+        names += displayName(p);
+    }
+    r.seeds = seeds;
+    r.ok = true;
+    std::wstring where = (scope >= 0 && scope < (int)gs.size()) ? (L"[" + gs[scope] + L"] ") : L"";
+    history.push_back(nowStamp() + L"  [抽" + std::to_wstring(n) + L"人] " + where + names +
+                      L"  seed=" + seeds);
+    if (history.size() > 200) history.erase(history.begin());
+    return r;
+}
+
+// 补足到 n 个组：只加空组、只安置「还没分组」的人，不动已有分组（幂等，安全）
+bool Roster::initGroups(int n, std::wstring& msg) {
+    if (n <= 0) return false;
+    auto gs = groupList();
+    if ((int)gs.size() >= n) {
+        msg = L"现在已经有 " + std::to_wstring(gs.size()) + L" 个组了（不少于 " + std::to_wstring(n) +
+              L" 个），不用补。要改名双击组名，要重排就选「重排」。";
+        return false;
+    }
+    for (int i = 1; (int)groups.size() < n; i++) {
+        std::wstring name = L"第" + std::to_wstring(i) + L"组";
+        if (std::find(gs.begin(), gs.end(), name) != gs.end()) continue;
+        groups.push_back(name);
+        gs.push_back(name);
+    }
+    // 还没分组的人轮流分进去（按名单顺序，不随机——分组不是抽取）
+    int assigned = 0;
+    for (Person& p : people) {
+        if (!p.group.empty() && p.group != L"未分组") continue;
+        p.group = groups[assigned % (int)groups.size()];
+        assigned++;
+    }
+    msg = L"已补到 " + std::to_wstring(groups.size()) + L" 个组" +
+          (assigned ? (L"，并把 " + std::to_wstring(assigned) + L" 位没分组的同学分了进去") : L"") +
+          L"。空组可以先留着，之后选中人点「移组」往里加人。";
+    return true;
+}
+
+// 强制重排成 n 组：全班按名单顺序轮流分，原有分组被覆盖（GUI 里会先问一次）
+bool Roster::regroupAll(int n, std::wstring& msg) {
+    if (n <= 0) return false;
+    groups.clear();
+    for (int i = 1; i <= n; i++) groups.push_back(L"第" + std::to_wstring(i) + L"组");
+    if (people.empty()) {
+        msg = L"已经搭好 " + std::to_wstring(n) + L" 个组的空架子，导入名单后再分人";
+        return true;
+    }
+    for (size_t i = 0; i < people.size(); i++) people[i].group = groups[i % (size_t)n];
+    int per = (int)people.size() / n;
+    int rest = (int)people.size() % n;
+    msg = L"已把全班 " + std::to_wstring(people.size()) + L" 人分成 " + std::to_wstring(n) + L" 组：每组 " +
+          std::to_wstring(per) + L" 人" + (rest ? (L"，前 " + std::to_wstring(rest) + L" 组各多 1 人") : L"") +
+          L"。双击组名可改名，选中人点「移组」可调。";
+    return true;
+}
+
+bool Roster::renameGroup(const std::wstring& oldName, const std::wstring& nw, std::wstring& msg) {
+    if (nw.empty()) {
+        msg = L"组名不能为空";
+        return false;
+    }
+    auto gs = groupList();
+    if (std::find(gs.begin(), gs.end(), oldName) == gs.end()) {
+        msg = L"没找到叫「" + oldName + L"」的组";
+        return false;
+    }
+    if (nw != oldName && std::find(gs.begin(), gs.end(), nw) != gs.end()) {
+        msg = L"已经有叫「" + nw + L"」的组了，换个名字";
+        return false;
+    }
+    for (std::wstring& g : groups)
+        if (g == oldName) g = nw;
+    int moved = 0;
+    for (Person& p : people)
+        if (normGroup(p.group) == oldName) {
+            p.group = nw;
+            moved++;
+        }
+    msg = L"组名已改为「" + nw + L"」" + (moved ? (L"（" + std::to_wstring(moved) + L" 人跟着改）") : L"");
+    return true;
 }
 
 void Roster::resetDrawn() { drawn.clear(); }
@@ -720,6 +866,7 @@ bool Roster::importFile(const std::string& path, bool append, std::wstring& msg)
     if (!append) {
         people.clear();
         drawn.clear();
+        groups.clear();  // 覆盖导入：组结构跟着新名单走，旧的一键 6 组不留残影
     }
     people.insert(people.end(), loaded.begin(), loaded.end());
     std::wstring src = isXlsx ? L"xlsx" : (isMd ? L"markdown" : L"csv/txt");

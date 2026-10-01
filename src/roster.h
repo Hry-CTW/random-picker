@@ -21,9 +21,18 @@ struct PickResult {
     std::wstring seed;
 };
 
+// 一次抽 N 人的结果（v2）
+struct MultiResult {
+    bool ok = false;
+    std::vector<Person> people;
+    std::wstring seeds;   // 每一步用到的随机数原值（十六进制，空格分隔）——可复现、可留证
+    std::wstring msg;     // 失败时的人话提示
+};
+
 class Roster {
 public:
     std::vector<Person> people;
+    std::vector<std::wstring> groups;  // 固定组序：允许存在空组，便于「一键 6 组」后逐个加人
     std::vector<std::wstring> history;
     std::set<std::wstring> drawn;
     bool noRepeat = false;
@@ -34,13 +43,20 @@ public:
 
     std::vector<std::wstring> groupList() const;
     int countInScope(int scope) const;
+    int countInGroup(const std::wstring& g) const;
     PickResult pick(int scope);        // scope: -1 全班, >=0 指定组下标
     PickResult pickGroup();            // 随机抽一个组
+    MultiResult pickMulti(int scope, int n);  // v2：一次抽 n 人（范围内不重复）
     void resetDrawn();
 
     void add(const Person& p);
     void removeAt(int i);
     void setGroup(int i, const std::wstring& g);
+
+    // v2 组结构维护
+    bool initGroups(int n, std::wstring& msg);   // 补足到 n 个组（只加空组、只安置无组的人）
+    bool regroupAll(int n, std::wstring& msg);   // 强制重排成 n 组（全班轮流，覆盖原分组）
+    bool renameGroup(const std::wstring& oldName, const std::wstring& nw, std::wstring& msg);
 };
 
 std::wstring utf8_to_wide(const std::string& s);
