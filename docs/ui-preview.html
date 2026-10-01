@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Random Picker v2 · 界面预览</title>
+<style>
+:root{
+  --ui:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;
+  --mono:ui-monospace,Menlo,Consolas,"SF Mono",monospace;
+}
+[data-theme="geek"]{
+  --bg:#0B0E14; --panel:#11151C; --panel2:#171C25; --text:#E6EDF3; --dim:#6E7681; --dim2:#969EAA;
+  --accent:#00E5A0; --accent2:#7C5CFF; --border:#262C38; --sel:#1C232F; --rowAlt:#0F1218;
+  --onAccent:#04140F; --hot:#1A222E; --r:6px;
+}
+[data-theme="ins"]{
+  --bg:#F7F7F9; --panel:#FFFFFF; --panel2:#F0F0F4; --text:#1B1B1F; --dim:#8A8A94; --dim2:#787884;
+  --accent:#4C6FFF; --accent2:#FF6A94; --border:#E2E2EA; --sel:#E9EEFF; --rowAlt:#FAFAFC;
+  --onAccent:#FFFFFF; --hot:#F0F3FF; --r:14px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--ui);background:#8e8e93;padding:28px 16px 48px}
+.wrap{max-width:1040px;margin:0 auto}
+.cap{color:#fff;font-size:13px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px}
+.cap b{font-weight:500;font-size:15px}
+.cap span{color:#d8d8dc}
+
+.app{background:var(--bg);border-radius:12px;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.45);color:var(--text);font-size:13px;user-select:none}
+.hdr{height:46px;display:flex;align-items:center;padding:0 16px;background:var(--panel);gap:14px}
+.hdr .logo{color:var(--accent);font-weight:500;font-size:15px;letter-spacing:.5px}
+.hdr .sub{color:var(--dim);font-size:12px;margin-left:-6px}
+.hdr .sp{flex:1}
+.theme-btn{width:112px;height:24px;border-radius:8px;background:var(--panel2);border:1px solid var(--border);color:var(--text);font-size:11.5px;font-family:var(--ui);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px}
+.theme-btn:hover{background:var(--hot)}
+.byline{color:var(--dim);font-size:11.5px;width:64px;text-align:right}
+.ctw{display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;background:var(--accent);color:var(--onAccent);font-size:10px;font-weight:500;margin-left:8px}
+
+.body{display:flex;height:594px}
+.left{width:320px;flex:none;background:var(--panel);border-right:1px solid var(--border);padding:14px;overflow:hidden}
+.tabs{display:flex;flex-wrap:wrap;gap:6px}
+.tab{height:28px;padding:0 10px;border-radius:var(--r);background:var(--panel2);border:1px solid var(--border);color:var(--dim);font-size:11.5px;cursor:pointer;display:flex;align-items:center}
+.tab.on{background:var(--sel);border-color:var(--accent);color:var(--accent)}
+.tab:hover{background:var(--hot)}
+.list{margin-top:10px;height:508px;overflow:hidden}
+.row{height:26px;display:flex;align-items:center;font-size:12.5px;border-radius:3px;padding:0 6px;cursor:pointer}
+.row:hover{background:var(--hot)}
+.row.sel{background:var(--sel);box-shadow:inset 0 0 0 1px var(--accent2)}
+.row.out{background:var(--rowAlt)}
+.row .i{width:24px;color:var(--dim);font-family:var(--mono);font-size:11px}
+.row .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .gp{color:var(--accent);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:80px}
+.row.out .nm,.row.out .gp{color:var(--dim2)}
+.row.done .nm,.row.done .gp{color:var(--dim)}
+.row.out .gp{color:var(--dim2)}
+
+.right{flex:1;min-width:0;padding:14px;display:flex;flex-direction:column}
+.r1{display:flex;gap:10px}
+.r1 button{flex:1;height:58px;border:none;border-radius:var(--r);font-family:var(--ui);font-size:16px;font-weight:500;cursor:pointer}
+.r1 button:first-child{flex:0 0 58%}
+.main{background:var(--accent);color:var(--onAccent)}
+.main:hover{filter:brightness(1.08)}
+.r2{display:flex;gap:6px;margin-top:10px;height:40px}
+.r2 input{width:66px;border-radius:var(--r);background:var(--panel);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:15px;text-align:center;padding:0 4px}
+.r2 input:focus{outline:none;border-color:var(--accent)}
+.dd{width:34px;border-radius:var(--r);background:var(--panel2);border:1px solid var(--border);color:var(--text);cursor:pointer;font-size:13px;font-family:var(--ui)}
+.dd:hover{background:var(--hot)}
+.pn{flex:1;background:var(--accent);color:var(--onAccent);border:none;border-radius:var(--r);font-family:var(--ui);font-size:15px;font-weight:500;cursor:pointer}
+.pn:hover{filter:brightness(1.08)}
+.all{width:88px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:var(--r);font-family:var(--ui);font-size:14px;cursor:pointer}
+.all:hover{background:var(--hot)}
+.menu{position:absolute;margin-top:42px;width:112px;background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:4px;z-index:20}
+.menu div{padding:6px 10px;border-radius:4px;font-size:12px;cursor:pointer;color:var(--text)}
+.menu div:hover{background:var(--hot)}
+
+.card{margin-top:12px;height:216px;border-radius:var(--r);background:var(--panel);border:1px solid var(--border);padding:16px 20px;display:flex;flex-direction:column}
+.card.hit{border-color:var(--accent)}
+.card .t{color:var(--dim);font-size:11.5px}
+.card .big{font-size:34px;font-weight:500;color:var(--accent);line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card .grp{color:var(--text);font-size:13px}
+.card .pl{font-size:16px;color:var(--accent);line-height:1.6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card .more{color:var(--dim);font-size:11.5px}
+.card .sp{flex:1}
+.card .sd{color:var(--dim);font-family:var(--mono);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card .idle{color:var(--dim);flex:1;display:flex;align-items:center;font-size:13px}
+
+.hist{flex:1;margin-top:12px;border-radius:var(--r);background:var(--panel);border:1px solid var(--border);padding:10px 14px;overflow:hidden}
+.hist .h{color:var(--dim);font-size:11.5px;margin-bottom:4px}
+.hist .l{color:var(--dim2);font-size:11.5px;line-height:22px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.btns{margin-top:12px;display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
+.btns button{height:36px;border-radius:var(--r);background:var(--panel2);border:1px solid var(--border);color:var(--dim2);font-family:var(--ui);font-size:11.5px;cursor:pointer}
+.btns button:hover{background:var(--hot);color:var(--text)}
+.btns button.on{background:var(--sel);border-color:var(--accent);color:var(--accent)}
+.btns button.dis{opacity:.4;cursor:default}
+
+.status{height:26px;display:flex;align-items:center;padding:0 14px;color:var(--dim);font-size:11.5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+
+.note{margin-top:22px;color:#e8e8ec;font-size:13px;line-height:1.75}
+.note h2{font-size:14px;font-weight:500;color:#fff;margin-bottom:8px}
+.note table{border-collapse:collapse;margin-top:8px}
+.note td{padding:3px 18px 3px 0;vertical-align:top;color:#dcdce0}
+.note td:first-child{color:#fff;white-space:nowrap;font-family:var(--mono);font-size:12px}
+.note .k{background:rgba(255,255,255,.14);border-radius:4px;padding:1px 6px;font-size:12px;font-family:var(--mono)}
+.note p{max-width:760px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="cap">
+    <b>Random Picker v2.0 · 界面预览</b>
+    <span>高保真复刻 Win32 原版布局与配色 · 可直接点击操作 · 右上角切换两套外观</span>
+  </div>
+
+  <div class="app" id="app" data-theme="geek">
+    <div class="hdr">
+      <span class="logo">RANDOM PICKER</span>
+      <span class="sub">班级随机抽人</span>
+      <span class="sp"></span>
+      <button class="theme-btn" id="themeBtn">风格：极客 ⇄</button>
+      <span class="byline">byHry</span>
+      <span class="ctw">CTW</span>
+    </div>
+
+    <div class="body">
+      <div class="left">
+        <div class="tabs" id="tabs"></div>
+        <div class="list" id="list"></div>
+      </div>
+
+      <div class="right">
+        <div class="r1">
+          <button class="main" id="bPick1">抽 1 人　空格</button>
+          <button class="main" id="bPickG">抽 1 组　G</button>
+        </div>
+        <div class="r2">
+          <input id="nIn" value="2" inputmode="numeric">
+          <button class="dd" id="bDd">▾</button>
+          <button class="pn" id="bPickN">抽 N 人</button>
+          <button class="all" id="bAll">全部</button>
+        </div>
+        <div class="card" id="card"></div>
+        <div class="hist" id="hist">
+          <div class="h">抽取记录（最近的在上，可导出留证）</div>
+          <div id="histL"></div>
+        </div>
+        <div class="btns" id="btns"></div>
+      </div>
+    </div>
+
+    <div class="status" id="status">就绪 · 空格=抽 1 人　G=抽组　T=换风格　Ctrl+O=导入　H=帮助</div>
+  </div>
+
+  <div class="note">
+    <h2>怎么用这个预览</h2>
+    <p>上面是按 <code>src/picker_gui.cpp</code> 的真实布局参数与取色值复刻的界面，<b>可以真的点</b>：抽 1 人、抽 1 组、抽 N 人、全部、切组范围、防重复、删人撤销、一键 6 组都有效果，抽完的结果卡底部会给出 seed，与原程序一样留证可复现。</p>
+    <table>
+      <tr><td>空格</td><td>随机抽 1 人</td></tr>
+      <tr><td>回车</td><td>按填写的人数抽 N 人</td></tr>
+      <tr><td>G</td><td>随机抽 1 个组</td></tr>
+      <tr><td>T</td><td>切换外观（极客 / ins）</td></tr>
+      <tr><td>N / R</td><td>开关防重复 / 重置已抽记录</td></tr>
+      <tr><td>F2</td><td>给当前组改名（双击组名同效）</td></tr>
+      <tr><td>Ctrl+Z</td><td>撤销上一次删除</td></tr>
+    </table>
+    <p style="margin-top:10px">两套外观的差异：<b>极客</b> 是深色 + 薄荷绿 <code>#00E5A0</code>、圆角 6px；<b>ins</b> 是浅底 + 低饱和蓝紫 <code>#4C6FFF</code>、圆角 14px，主按钮靠面积和留白突出，不靠撞色。</p>
+  </div>
+</div>
+
+<script>
+const CN = ['张三','周八','林一','何二','李四','孙七','郑十','高琪','王五','吴九','马涛','宋佳',
+            '赵六','冯远','陈曦','卫然','蒋宁','沈越','韩磊','杨柳','朱元','秦岭','尤佳','许诺'];
+const EN = ['Tom','Bob','Alan','Ryan','Lucy','Cici','Kate','Zoe','Jack','Ray','Leo','Mia',
+            'Ada','Ivan','Sean','Anna','Iris','Yue','Ken','Willa','Neo','Ling','Jia','Nora'];
+const GN = ['一组','二组','三组','四组','五组','六组'];
+
+let people = CN.map((n,i)=>({zh:n,en:EN[i],grp:GN[i%6]}));
+let groups = GN.slice();
+let scope = -1, sel = -1, noRepeat = false, drawn = new Set(), undo = null, history = [];
+let theme = 0, last = null;
+
+const $ = id=>document.getElementById(id);
+const appEl = $('app');
+const disp = p => p.zh + '（' + p.en + '）';
+const pool = ()=> {
+  const gs = curGroups();
+  return people.filter((p,i)=>{
+    if(scope>=0 && scope<gs.length) return grpOf(p)===gs[scope];
+    return true;
+  }).map(p=>people.indexOf(p));
+};
+const grpOf = p => p.grp || '未分组';
+function curGroups(){
+  const s=new Set(); people.forEach(p=>s.add(grpOf(p)));
+  const out=[]; groups.forEach(g=>{ if(!out.includes(g)) out.push(g); });
+  s.forEach(g=>{ if(!out.includes(g)) out.push(g); });
+  return out.filter(g=>g!=='未分组' || people.some(p=>grpOf(p)===g));
+}
+function seed16(){
+  const a=new Uint8Array(8); crypto.getRandomValues(a);
+  return Array.from(a).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function stamp(){
+  const d=new Date(),z=n=>String(n).padStart(2,'0');
+  return z(d.getHours())+':'+z(d.getMinutes())+':'+z(d.getSeconds());
+}
+
+function renderTabs(){
+  const gs=curGroups(), t=$('tabs'); t.innerHTML='';
+  t.insertAdjacentHTML('beforeend',
+    '<div class="tab'+(scope===-1?' on':'')+'" data-s="-1">全班 '+people.length+'</div>');
+  gs.forEach((g,i)=>{
+    const n=people.filter(p=>grpOf(p)===g).length;
+    t.insertAdjacentHTML('beforeend',
+      '<div class="tab'+(scope===i?' on':'')+'" data-s="'+i+'">'+g+' '+n+'</div>');
+  });
+  t.querySelectorAll('.tab').forEach(el=>{
+    el.onclick=()=>{ scope=+el.dataset.s; sel=-1; renderTabs(); renderList(); };
+    if(el.dataset.s!=='-1' && el.dataset.s!=='-0'){
+      el.ondblclick=()=>renameGroup(el.dataset.s);
+      el.title='双击改名';
+    }
+  });
+}
+function renderList(){
+  const l=$('list'), gs=curGroups(); l.innerHTML='';
+  people.forEach((p,i)=>{
+    const inScope = scope<0 || grpOf(p)===gs[scope];
+    const cl=['row']; if(sel===i)cl.push('sel'); else if(!inScope)cl.push('out');
+    if(drawn.has(p.zh))cl.push('done');
+    const div=document.createElement('div');
+    div.className=cl.join(' ');
+    div.innerHTML='<span class="i">'+String(i+1).padStart(2,'0')+'</span>'+
+      '<span class="nm">'+disp(p)+'</span>'+
+      '<span class="gp">'+grpOf(p)+'</span>';
+    div.onclick=()=>{ sel=i; renderList(); };
+    l.appendChild(div);
+  });
+  if(!people.length) l.innerHTML='<div class="row out" style="color:var(--dim)">（名单为空，Ctrl+O 导入）</div>';
+}
+function renderCard(){
+  const c=$('card'); c.className='card';
+  if(!last){ c.innerHTML='<div class="idle">按 空格 抽 1 人，或者上面填人数抽 N 人</div>'; return; }
+  c.className='card hit';
+  let h='<div class="t">'+last.title+' · 范围：'+last.where+'</div>';
+  if(last.list.length===1){
+    h+='<div class="big">'+disp(last.list[0])+'</div>';
+    if(!last.isGroup) h+='<div class="grp">组别：'+grpOf(last.list[0])+'</div>';
+  }else{
+    last.list.slice(0,5).forEach(p=>{ h+='<div class="pl">'+disp(p)+'　['+grpOf(p)+']</div>'; });
+    if(last.list.length>5) h+='<div class="more">…还有 '+(last.list.length-5)+' 人（导出记录看全部）</div>';
+  }
+  h+='<div class="sp"></div><div class="sd">seed '+last.seed+'</div>';
+  c.innerHTML=h;
+}
+function renderHist(){
+  const el=$('histL'); el.innerHTML='';
+  history.slice(-4).reverse().forEach(x=>{
+    el.insertAdjacentHTML('beforeend','<div class="l">'+x+'</div>');
+  });
+}
+function renderBtns(){
+  const defs=[['import','导入名单 Ctrl+O'],['save','保存 Ctrl+S'],['nr','防重复 N'],['reset','重置 R'],
+    ['add','加人 A'],['move','移组 M'],['rename','组改名 F2'],['del','删除 Del'],
+    ['undo','撤销 Ctrl+Z'],['init6','一键 6 组'],['hist','导出记录'],['help','帮助 H']];
+  const b=$('btns'); b.innerHTML='';
+  defs.forEach(([k,t])=>{
+    let cls='';
+    if(k==='nr'&&noRepeat)cls='on';
+    if((k==='undo'&&!undo)||(k==='move'&&sel<0)||(k==='rename'&&scope<0)||(k==='del'&&sel<0))cls='dis';
+    b.insertAdjacentHTML('beforeend','<button class="'+cls+'" data-k="'+k+'">'+t+'</button>');
+  });
+  b.querySelectorAll('button').forEach(el=>el.onclick=()=>act(el.dataset.k));
+}
+function renderAll(){ renderTabs(); renderList(); renderCard(); renderHist(); renderBtns(); }
+
+function say(s){ $('status').textContent=s; }
+
+function pickOne(){
+  const idx=pool().filter(i=>!(noRepeat&&drawn.has(people[i].zh)));
+  if(!idx.length){ say('当前范围已经抽完了（防重复开启中），按 R 重置'); return; }
+  const k=idx[Math.floor(Math.random()*idx.length)];
+  const p=people[k], sd=seed16();
+  if(noRepeat) drawn.add(p.zh);
+  last={title:'抽中的人', where:whereStr(), list:[p], seed:sd, isGroup:false};
+  history.push(stamp()+'　'+disp(p)+' ['+grpOf(p)+']　seed='+sd);
+  renderCard(); renderHist(); renderList(); say('抽中了 '+disp(p)+'　·　范围：'+whereStr());
+}
+function pickGroup(){
+  const gs=curGroups(); if(!gs.length){ say('还没有分组，先点「一键 6 组」'); return; }
+  const g=gs[Math.floor(Math.random()*gs.length)];
+  const sd=seed16();
+  last={title:'抽中的组', where:'全班', list:[{zh:g,en:'',grp:''}], seed:sd, isGroup:true};
+  history.push(stamp()+'　[组] '+g+'　seed='+sd);
+  renderCard(); renderHist(); say('抽中的组：'+g);
+}
+function pickN(n){
+  let idx=pool().filter(i=>!(noRepeat&&drawn.has(people[i].zh)));
+  const avail=idx.length;
+  if(n<=0){ say('人数要大于 0'); return; }
+  if(n>avail){ say('这个范围现在只能抽 '+avail+' 人，填的 '+n+' 太多了'); return; }
+  const seeds=[]; const out=[];
+  for(let s=0;s<n;s++){
+    const sd=seed16(); seeds.push(sd);
+    const j=Math.floor(Math.random()*(n-s));
+    const t=idx[s]; idx[s]=idx[s+j]; idx[s+j]=t;
+    out.push(people[idx[s]]);
+    if(noRepeat) drawn.add(people[idx[s]].zh);
+  }
+  last={title:'抽中的 '+n+' 人', where:whereStr(), list:out, seed:seeds.join(' '), isGroup:false};
+  history.push(stamp()+'　[抽'+n+'人] '+(scope>=0?'['+curGroups()[scope]+'] ':'')+
+    out.map(disp).join('、')+'　seed='+seeds.join(' '));
+  renderCard(); renderHist(); renderList();
+  say('抽中 '+n+' 人 · 每步随机数已记进 seed，可复现');
+}
+function whereStr(){
+  const gs=curGroups();
+  return scope<0?'全班':gs[scope];
+}
+function renameGroup(si){
+  const gs=curGroups(), old=gs[+si];
+  const nv=prompt('给「'+old+'」改个名：', old);
+  if(!nv||nv===old) return;
+  if(curGroups().includes(nv)){ say('已经有叫「'+nv+'」的组了，换个名字'); return; }
+  people.forEach(p=>{ if(grpOf(p)===old) p.grp=nv; });
+  const i=groups.indexOf(old); if(i>=0) groups[i]=nv;
+  say('已改名：'+old+' → '+nv+'，组员自动跟着改');
+  renderAll();
+}
+function act(k){
+  switch(k){
+    case 'import': say('Ctrl+O 导入 csv / md / txt / xlsx（自动识别 UTF-8 / UTF-16 / GBK）'); break;
+    case 'save':   say('Ctrl+S 导出为 csv'); break;
+    case 'nr':     noRepeat=!noRepeat; say('防重复已'+(noRepeat?'开启':'关闭')+'（开启后本轮不重名）'); renderBtns(); renderList(); break;
+    case 'reset':  drawn.clear(); say('已重置已抽记录'); renderList(); renderBtns(); break;
+    case 'add':    say('A 键加人：现场加临时同学，不用改代码'); break;
+    case 'move':   if(sel<0){ say('先在左边名单里选一个人'); break; } say('M 键移组：弹出列表选目标组，也能顺手新建组'); break;
+    case 'rename': if(scope<0){ say('先点一个组页签再改名（或双击组名）'); break; } renameGroup(scope); break;
+    case 'del':
+      if(sel<0){ say('先在左边名单里选一个人'); break; }
+      undo={p:people[sel], i:sel}; people.splice(sel,1); sel=-1;
+      say('已删除 '+disp(undo.p)+'，Ctrl+Z 可以撤销'); renderAll(); break;
+    case 'undo':
+      if(!undo){ say('没有可撤销的删除'); break; }
+      people.splice(Math.min(undo.i,people.length),0,undo.p);
+      say('已撤销：'+disp(undo.p)+' 回来了'); undo=null; renderAll(); break;
+    case 'init6':
+      groups=GN.slice();
+      people.forEach((p,i)=>{ if(!p.grp) p.grp=groups[i%6]; });
+      say('已确保 6 个组的组序；没分组的同学轮流补进去了'); renderAll(); break;
+    case 'hist':
+      say('导出：'+history.length+' 条记录（时间 / 结果 / seed 三列 csv）'); break;
+    case 'help':  say('H 键帮助 · byHry · CTW · Random Picker v2.0'); break;
+  }
+}
+
+$('themeBtn').onclick=()=>{
+  theme=1-theme;
+  appEl.dataset.theme=theme?'ins':'geek';
+  $('themeBtn').textContent='风格：'+(theme?'ins':'极客')+' ⇄';
+};
+$('bPick1').onclick=pickOne;
+$('bPickG').onclick=pickGroup;
+$('bPickN').onclick=()=>pickN(parseInt($('nIn').value,10)||0);
+$('bAll').onclick=()=>{
+  const gs=curGroups();
+  const n=scope<0?people.length:people.filter(p=>grpOf(p)===gs[scope]).length;
+  $('nIn').value=n; pickN(n);
+};
+$('bDd').onclick=e=>{
+  e.stopPropagation();
+  const old=document.querySelector('.menu'); if(old){ old.remove(); return; }
+  const opts=[1,2,3,4,5,6,8,10];
+  const m=document.createElement('div');
+  m.className='menu';
+  const r=$('bDd').getBoundingClientRect();
+  m.style.left=r.left+'px'; m.style.top=r.top+'px';
+  m.innerHTML=opts.map(o=>'<div data-n="'+o+'">'+o+' 人</div>').join('');
+  m.querySelectorAll('div').forEach(d=>d.onclick=()=>{ $('nIn').value=d.dataset.n; m.remove(); });
+  document.body.appendChild(m);
+};
+document.addEventListener('click',()=>{ const m=document.querySelector('.menu'); if(m) m.remove(); });
+
+document.addEventListener('keydown',e=>{
+  if(/input|textarea/i.test(e.target.tagName)){
+    if(e.key==='Enter'){ pickN(parseInt($('nIn').value,10)||0); e.preventDefault(); }
+    return;
+  }
+  const k=e.key.toLowerCase();
+  if(e.code==='Space'){ e.preventDefault(); pickOne(); }
+  else if(k==='g') pickGroup();
+  else if(k==='t') $('themeBtn').click();
+  else if(k==='n') act('nr');
+  else if(k==='r') act('reset');
+  else if(k==='delete'||k==='backspace') act('del');
+  else if(e.key==='F2'){ e.preventDefault(); if(scope>=0) renameGroup(scope); }
+  else if(k==='z'&&(e.ctrlKey||e.metaKey)){ e.preventDefault(); act('undo'); }
+});
+
+renderAll();
+</script>
+</body>
+</html>
