@@ -15,6 +15,9 @@ vc.on('error', (...a) => errs.push('console.error: ' + a.join(' ')));
 const dom = new JSDOM(html, { runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: vc });
 const w = dom.window, d = w.document;
 
+w.prompt = () => promptReply;  // 一键 N 组的组数输入
+let promptReply = '8';
+
 if (!w.crypto || !w.crypto.getRandomValues) {
   w.crypto = { getRandomValues: a => { for (let i = 0; i < a.length; i++) a[i] = Math.floor(Math.random() * 256); return a; } };
 }
@@ -46,8 +49,14 @@ chk('结果卡高亮', one.classList.contains('hit'));
 chk('标题为「抽中的人」', one.textContent.includes('抽中的人'));
 chk('显示大字姓名', !!one.querySelector('.big'));
 chk('显示组别', !!one.querySelector('.grp'));
-chk('seed 为 16 位十六进制', /^seed [0-9a-f]{16}$/.test(one.querySelector('.sd').textContent),
-    one.querySelector('.sd').textContent);
+chk('结果卡不再常驻 seed 行', !one.querySelector('.sd'));
+one.dispatchEvent(new w.MouseEvent('mouseenter', { bubbles: true }));
+const tipEl = d.getElementById('tip');
+chk('悬停后 seed 提示出现', !!tipEl && tipEl.style.display === 'block');
+chk('seed 为 16 位十六进制', !!tipEl && /[0-9a-f]{16}/.test(tipEl.textContent),
+    tipEl ? tipEl.textContent : '(无 tip)');
+one.dispatchEvent(new w.MouseEvent('mouseleave', { bubbles: true }));
+chk('移开后 seed 提示隐藏', !!tipEl && tipEl.style.display === 'none');
 chk('历史已记录 1 条', d.querySelectorAll('#histL .l').length === 1);
 
 console.log('[3] 抽 1 组');
@@ -60,9 +69,22 @@ d.getElementById('nIn').value = '3';
 click('bPickN');
 chk('列出 3 行人名', d.querySelectorAll('#card .pl').length === 3,
     String(d.querySelectorAll('#card .pl').length));
-chk('seed 为 3 段', d.querySelector('#card .sd').textContent.split(' ').length === 4,
-    d.querySelector('#card .sd').textContent);
+d.getElementById('card').dispatchEvent(new w.MouseEvent('mouseenter', { bubbles: true }));
+chk('seed 为 3 段（tip 内折行）', d.getElementById('tip').textContent.split('\n').length === 4,
+    d.getElementById('tip').textContent);
+d.getElementById('card').dispatchEvent(new w.MouseEvent('mouseleave', { bubbles: true }));
 chk('标题为「抽中的 3 人」', d.getElementById('card').textContent.includes('抽中的 3 人'));
+chk('组名用 · 分隔（不再用方括号）', /\w*·\s*\S+/.test(d.querySelector('#card .pl').textContent) &&
+    !d.getElementById('card').textContent.includes('['),
+    d.querySelector('#card .pl').textContent);
+
+console.log('[4c] 多人结果滚动提示');
+d.getElementById('nIn').value = '12';
+click('bPickN');
+chk('12 行全部渲染（滚动由 CSS/滚轮负责）', d.querySelectorAll('#card .pl').length === 12,
+    String(d.querySelectorAll('#card .pl').length));
+chk('底部提示滚轮翻动', d.getElementById('card').textContent.includes('滚轮翻动'));
+chk('不再出现「导出记录看全部」', !d.getElementById('card').textContent.includes('导出记录看全部'));
 
 console.log('[4b] 抽 N 人的组分布（回归：随机范围必须是池长而非 n）');
 {
@@ -72,8 +94,8 @@ console.log('[4b] 抽 N 人的组分布（回归：随机范围必须是池长�
     click('bPickN');
     const gs = [];
     d.querySelectorAll('#card .pl').forEach(el => {
-      const m = el.textContent.match(/\[(.+?)\]$/);
-      if (m) { seenGroups.add(m[1]); gs.push(m[1]); }
+      const parts = el.textContent.split(' · ');
+      if (parts.length > 1) { seenGroups.add(parts[parts.length - 1]); gs.push(parts[parts.length - 1]); }
     });
     combos.add(gs.slice().sort().join('/'));
   }
@@ -123,9 +145,17 @@ d.querySelector('[data-k="undo"]').dispatchEvent(new w.MouseEvent('click', { bub
 chk('撤销后恢复 24 人', d.querySelectorAll('.list .row').length === 24,
     String(d.querySelectorAll('.list .row').length));
 
-console.log('[9] 一键 6 组');
+console.log('[9] 一键 N 组');
+promptReply = '8';
 d.querySelector('[data-k="init6"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
-chk('仍为 6 组页签 + 全班', d.querySelectorAll('.tab').length === 7,
+chk('输入 8 → 8 组页签 + 全班', d.querySelectorAll('.tab').length === 9,
+    String(d.querySelectorAll('.tab').length));
+promptReply = '0';
+d.querySelector('[data-k="init6"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+chk('组数 0 被拦', status().includes('1~99'), status());
+promptReply = '3';
+d.querySelector('[data-k="init6"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+chk('输入 3 → 3 组页签 + 全班', d.querySelectorAll('.tab').length === 4,
     String(d.querySelectorAll('.tab').length));
 
 console.log('[10] 主题切换与快捷键');

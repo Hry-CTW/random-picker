@@ -34,7 +34,9 @@ body{font-family:var(--ui);background:#8e8e93;padding:28px 16px 48px}
 .theme-btn{width:112px;height:24px;border-radius:8px;background:var(--panel2);border:1px solid var(--border);color:var(--text);font-size:11.5px;font-family:var(--ui);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px}
 .theme-btn:hover{background:var(--hot)}
 .byline{color:var(--dim);font-size:11.5px;width:64px;text-align:right}
-.ctw{display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;background:var(--accent);color:var(--onAccent);font-size:10px;font-weight:500;margin-left:8px}
+.ctw{width:34px;height:34px;margin-left:8px;flex:none}
+.hlogo{width:30px;height:30px;margin-right:10px;flex:none}
+.plwrap{flex:1;overflow-y:auto;min-height:0}
 
 .body{display:flex;height:594px}
 .left{width:320px;flex:none;background:var(--panel);border-right:1px solid var(--border);padding:14px;overflow:hidden}
@@ -114,12 +116,12 @@ body{font-family:var(--ui);background:#8e8e93;padding:28px 16px 48px}
 
   <div class="app" id="app" data-theme="geek">
     <div class="hdr">
+      <svg class="hlogo" viewBox="0 0 512 512" aria-hidden="true"><rect x="14" y="14" width="484" height="484" rx="112" fill="var(--panel2)" stroke="var(--accent)" stroke-width="22"/><circle cx="374" cy="138" r="36" fill="var(--accent)"/><circle cx="256" cy="256" r="42" fill="var(--accent)"/><circle cx="138" cy="374" r="36" fill="var(--accent)"/></svg>
       <span class="logo">RANDOM PICKER</span>
-      <span class="sub">班级随机抽人</span>
+      <span class="sub">班级随机抽人 · byHry</span>
       <span class="sp"></span>
       <button class="theme-btn" id="themeBtn">风格：极客 ⇄</button>
-      <span class="byline">byHry</span>
-      <span class="ctw">CTW</span>
+      <svg class="ctw" viewBox="0 0 512 512" aria-hidden="true"><rect x="14" y="14" width="484" height="484" rx="112" fill="var(--panel2)" stroke="var(--accent)" stroke-width="22"/><circle cx="374" cy="138" r="36" fill="var(--accent)"/><circle cx="256" cy="256" r="42" fill="var(--accent)"/><circle cx="138" cy="374" r="36" fill="var(--accent)"/></svg>
     </div>
 
     <div class="body">
@@ -247,10 +249,13 @@ function renderCard(){
     h+='<div class="big">'+disp(last.list[0])+'</div>';
     if(!last.isGroup) h+='<div class="grp">组别：'+grpOf(last.list[0])+'</div>';
   }else{
-    last.list.slice(0,5).forEach(p=>{ h+='<div class="pl">'+disp(p)+'　['+grpOf(p)+']</div>'; });
-    if(last.list.length>5) h+='<div class="more">…还有 '+(last.list.length-5)+' 人（导出记录看全部）</div>';
+    h+='<div class="plwrap">';
+    last.list.forEach(p=>{ h+='<div class="pl">'+disp(p)+' · '+grpOf(p)+'</div>'; });
+    h+='</div>';
   }
-  h+='<div class="sp"></div><div class="sd">seed '+last.seed+'</div>';
+  h+='<div class="sp"></div><div class="more">'+(last.list.length>1
+    ? ('共 '+last.list.length+' 人 · 滚轮翻动 · ')
+    : '')+'悬停看 seed（抽取留证，可复现）</div>';
   c.innerHTML=h;
 }
 function renderHist(){
@@ -262,7 +267,7 @@ function renderHist(){
 function renderBtns(){
   const defs=[['import','导入名单 Ctrl+O'],['save','保存 Ctrl+S'],['nr','防重复 N'],['reset','重置 R'],
     ['add','加人 A'],['move','移组 M'],['rename','组改名 F2'],['del','删除 Del'],
-    ['undo','撤销 Ctrl+Z'],['init6','一键 6 组'],['hist','导出记录'],['help','帮助 H']];
+    ['undo','撤销 Ctrl+Z'],['init6','一键 N 组'],['hist','导出记录'],['help','帮助 H']];
   const b=$('btns'); b.innerHTML='';
   defs.forEach(([k,t])=>{
     let cls='';
@@ -347,10 +352,13 @@ function act(k){
       if(!undo){ say('没有可撤销的删除'); break; }
       people.splice(Math.min(undo.i,people.length),0,undo.p);
       say('已撤销：'+disp(undo.p)+' 回来了'); undo=null; renderAll(); break;
-    case 'init6':
-      groups=GN.slice();
-      people.forEach((p,i)=>{ if(!p.grp) p.grp=groups[i%6]; });
-      say('已确保 6 个组的组序；没分组的同学轮流补进去了'); renderAll(); break;
+    case 'init6': {
+      const n=parseInt(prompt('分成几组？（不一定是 6，1~99）','6'),10);
+      if(!n||n<1||n>99){ say('组数要在 1~99 之间'); break; }
+      groups=[]; for(let i=0;i<n;i++) groups.push(i<6?GN[i]:'第'+(i+1)+'组');
+      people.forEach((p,i)=>{ p.grp=groups[i%n]; });
+      say('已分成 '+n+' 组（重排会覆盖原分组）'); renderAll(); break;
+    }
     case 'hist':
       say('导出：'+history.length+' 条记录（时间 / 结果 / seed 三列 csv）'); break;
     case 'help':  say('H 键帮助 · byHry · CTW · Random Picker v2.0'); break;
@@ -401,6 +409,15 @@ document.addEventListener('keydown',e=>{
 });
 
 renderAll();
+
+const tip=document.createElement('div');
+tip.id='tip';
+tip.style.cssText='position:fixed;display:none;z-index:99;pointer-events:none;background:var(--panel2);border:1px solid var(--accent);border-radius:6px;padding:8px 10px;font-family:var(--mono);font-size:11px;color:var(--text);max-width:300px;white-space:pre-line';
+document.body.appendChild(tip);
+const cardEl=$('card');
+cardEl.addEventListener('mouseenter',()=>{ if(last&&last.seed){ tip.textContent='seed（抽取留证，可复现）\n'+last.seed.split(' ').join('\n'); tip.style.display='block'; }});
+cardEl.addEventListener('mousemove',e=>{ tip.style.left=Math.min(e.clientX+16,innerWidth-310)+'px'; tip.style.top=Math.min(e.clientY+20,innerHeight-140)+'px'; });
+cardEl.addEventListener('mouseleave',()=>{ tip.style.display='none'; });
 </script>
 </body>
 </html>
