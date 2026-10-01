@@ -17,8 +17,9 @@
 #endif
 
 // ---------- 资源 ID（与 resources.rc 对应）----------
-static const UINT kResIcon = 1;      // exe/标题栏图标（ctw.ico）
-static const UINT kResLogoPng = 201; // 右上角徽标 PNG（icon_dark）
+static const UINT kResIcon = 1;       // exe/标题栏/任务栏图标（骰子五点 ico）
+static const UINT kResLogoGeek = 201; // 顶栏徽标 PNG（极客深色主题）
+static const UINT kResLogoIns = 202;  // 顶栏徽标 PNG（ins 浅色主题）
 
 // ---------- 主题 ----------
 struct Pal {
@@ -52,33 +53,41 @@ static void applyTheme(int t) { g_theme = t ? 1 : 0; g_p = g_theme ? kIns : kGee
 
 static const wchar_t* kSignature = L"byHry · CTW";  // 署名，帮助里可见
 
-// ---------- CTW 徽标（从资源加载 PNG）----------
-static Gdiplus::Bitmap* g_logo = nullptr;
+// ---------- 顶栏徽标（从资源加载 PNG，两套主题各一份）----------
+static Gdiplus::Bitmap* g_logoGeek = nullptr;
+static Gdiplus::Bitmap* g_logoIns = nullptr;
 static ULONG_PTR g_gdipToken = 0;
 
-static void loadLogo(HINSTANCE hInst) {
-    Gdiplus::GdiplusStartupInput si;
-    if (Gdiplus::GdiplusStartup(&g_gdipToken, &si, nullptr) != Gdiplus::Ok) return;
-    HRSRC hr = FindResourceW(hInst, MAKEINTRESOURCEW(kResLogoPng), MAKEINTRESOURCEW(10) /*RT_RCDATA*/);
-    if (!hr) return;
+static Gdiplus::Bitmap* loadLogoPng(HINSTANCE hInst, UINT id) {
+    HRSRC hr = FindResourceW(hInst, MAKEINTRESOURCEW(id), MAKEINTRESOURCEW(10) /*RT_RCDATA*/);
+    if (!hr) return nullptr;
     HGLOBAL hg = LoadResource(hInst, hr);
-    if (!hg) return;
+    if (!hg) return nullptr;
     const void* data = LockResource(hg);
     DWORD sz = SizeofResource(hInst, hr);
-    if (!data || !sz) return;
+    if (!data || !sz) return nullptr;
     HGLOBAL gm = GlobalAlloc(GMEM_MOVEABLE, sz);
-    if (!gm) return;
+    if (!gm) return nullptr;
     void* p = GlobalLock(gm);
-    if (!p) { GlobalFree(gm); return; }
+    if (!p) { GlobalFree(gm); return nullptr; }
     memcpy(p, data, sz);
     GlobalUnlock(gm);
     IStream* stream = nullptr;
+    Gdiplus::Bitmap* bmp = nullptr;
     if (SUCCEEDED(CreateStreamOnHGlobal(gm, TRUE, &stream))) {
-        g_logo = Gdiplus::Bitmap::FromStream(stream);  // Bitmap 接管内存，stream 释放时回收
+        bmp = Gdiplus::Bitmap::FromStream(stream);  // Bitmap 接管内存，stream 释放时回收
         stream->Release();
     } else {
         GlobalFree(gm);
     }
+    return bmp;
+}
+
+static void loadLogo(HINSTANCE hInst) {
+    Gdiplus::GdiplusStartupInput si;
+    if (Gdiplus::GdiplusStartup(&g_gdipToken, &si, nullptr) != Gdiplus::Ok) return;
+    g_logoGeek = loadLogoPng(hInst, kResLogoGeek);
+    g_logoIns = loadLogoPng(hInst, kResLogoIns);
 }
 
 // ---------- 状态 ----------
@@ -90,6 +99,13 @@ static int g_pickN = 2;               // 抽 N 人的 N
 static int g_hover = -1;
 static int g_hoverBig = -1;
 static int g_hoverTab = -1;
+
+// seed 悬停提示：seed 平时不占版面，鼠标停在结果卡上才浮出来（留证信息仍在历史里）
+static POINT g_mouse{0, 0};
+static bool g_tipOn = false;       // 鼠标正悬停在结果卡上
+static bool g_tipTracked = false;  // 已登记 TrackMouseEvent
+// 结果卡滚动：人多时滚轮翻，不再「导出记录看全部」
+static int g_cardScroll = 0;
 
 struct LastPick {
     bool ok = false;
@@ -250,7 +266,7 @@ static void computeLayout(HWND hwnd) {
         {B_NOREPEAT, L"防重复 N"},      {B_RESET, L"重置 R"},
         {B_ADD, L"加人 A"},             {B_MOVE, L"移组 M"},
         {B_RENAME, L"组改名 F2"},       {B_DEL, L"删除 Del"},
-        {B_UNDO, L"撤销 Ctrl+Z"},       {B_INIT6, L"一键 6 组"},
+        {B_UNDO, L"撤销 Ctrl+Z"},       {B_INIT6, L"一键 N 组"},
         {B_HIST, L"导出记录"},          {B_HELP, L"帮助 H"},
     };
     int cols = 6;
@@ -263,8 +279,8 @@ static void computeLayout(HWND hwnd) {
         g_buttons.push_back(Btn{defs[i].id, defs[i].label, RECT{bx, byy, bx + bw, byy + bh}});
     }
 
-    // 顶栏主题切换
-    g_themeRect = RECT{W - 190, 11, W - 78, 35};
+    // 顶栏主题切换（右侧留出徽标的位置：徽标 34px + 边距 14 + 间隙 10）
+    g_themeRect = RECT{W - 170, 11, W - 58, 35};
 
     if (g_hEditN)
         MoveWindow(g_hEditN, g_nEditRect.left, g_nEditRect.top + 4,
@@ -883,7 +899,7 @@ static void doPick(HWND hwnd) {
 static void doPickGroup(HWND hwnd) {
     PickResult r = g_roster.pickGroup();
     if (!r.ok) {
-        g_status = L"还没有分组信息，先点「一键 6 组」或导入带组别的名单";
+        g_status = L"还没有分组信息，先点「一键 N 组」或导入带组别的名单";
     } else {
         g_last = LastPick{};
         g_last.ok = true;
@@ -910,6 +926,7 @@ static void doPickN(HWND hwnd, int n) {
     g_last.list = r.people;
     g_last.seed = r.seeds;
     g_last.where = scopeName();
+    g_cardScroll = 0;  // 新一次抽取从头看
     std::wstring names;
     for (size_t i = 0; i < r.people.size(); i++) {
         if (i) names += L"、";
@@ -1040,10 +1057,17 @@ static void doUndo(HWND hwnd) {
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-// 一键 6 组：
-//  · 名单还没分组 → 直接轮流分成 6 组（最常见，一步到位）
+// 一键 N 组：组数不写死——班级可能 4 组也可能 8 组，现场输入。
+//  · 名单还没分组 → 直接轮流分成 N 组（最常见，一步到位）
 //  · 已经有分组 → 先问清「重排」还是「只补空组」，绝不偷偷覆盖老师的现有分组
-static void doInit6(HWND hwnd) {
+static void doInitGroups(HWND hwnd) {
+    std::vector<std::wstring> vals{L"6"};
+    if (!inputDialog(hwnd, L"一键 N 组", {L"组数"}, vals)) return;
+    int n = _wtoi(vals[0].c_str());
+    if (n <= 0 || n > 99) {
+        notice(hwnd, L"组数要在 1~99 之间");
+        return;
+    }
     auto gs = g_roster.groupList();
     int real = 0;
     std::wstring sample;
@@ -1055,18 +1079,18 @@ static void doInit6(HWND hwnd) {
     std::wstring msg;
     bool changed = false;
     if (real == 0) {
-        changed = g_roster.regroupAll(6, msg);
+        changed = g_roster.regroupAll(n, msg);
     } else {
-        int r = confirmDialog(hwnd, L"\u4e00\u952e 6 \u7ec4",  // 一键 6 组
+        int r = confirmDialog(hwnd, L"一键 N 组",
                               L"名单里现在有 " + std::to_wstring(real) + L" 个组（" + sample + L"）。\n\n"
-                              L"重排 —— 全班按名单顺序轮流分成第 1~6 组，原来的分组会被覆盖\n"
-                              L"只补空组 —— 保留现在的分组，只把不足的空组补到 6 个\n\n"
+                              L"重排 —— 全班按名单顺序轮流分成第 1~" + std::to_wstring(n) + L" 组，原来的分组会被覆盖\n"
+                              L"只补空组 —— 保留现在的分组，只把不足的空组补到 " + std::to_wstring(n) + L" 个\n\n"
                               L"（键盘 1 / 2 也可选，Esc 取消）",
                               L"\u91cd\u6392", L"\u53ea\u8865\u7a7a\u7ec4");  // 重排 / 只补空组
         if (r == 1)
-            changed = g_roster.regroupAll(6, msg);
+            changed = g_roster.regroupAll(n, msg);
         else if (r == 2)
-            changed = g_roster.initGroups(6, msg);
+            changed = g_roster.initGroups(n, msg);
         else
             return;
     }
@@ -1097,12 +1121,13 @@ static void doToggleTheme(HWND hwnd) {
 
 static void doHelp(HWND hwnd) {
     std::wstring s =
-        L"班级随机抽人工具  v2\n"
+        L"班级随机抽人工具  v2.1\n"
         L"----------------------------\n"
         L"最常用的三件事：\n"
         L"  抽 1 人   右上角大按钮 / 空格\n"
         L"  抽 1 组   右上角大按钮 / G\n"
         L"  抽 N 人   在第二行填人数（右边 ▾ 也能选），点「抽 N 人」；点「全部」= 把范围里的人一次抽完\n"
+        L"  · 结果多时在卡上滚轮翻动；鼠标停在结果卡上可看 seed（抽取留证，可复现）\n"
         L"  · 先点左边的组名页签，就只在这个组里抽；点「全班」就是全班抽\n\n"
         L"快捷键：\n"
         L"  空格      抽 1 人\n"
@@ -1119,7 +1144,7 @@ static void doHelp(HWND hwnd) {
         L"  Ctrl+S    保存名单为 csv\n"
         L"  H         本帮助\n\n"
         L"分组怎么弄：\n"
-        L"  点「一键 6 组」—— 自动生成第 1~6 组，没分组的同学会平均分进去\n"
+        L"  点「一键 N 组」—— 输入组数（不一定是 6），没分组的同学会平均分进去\n"
         L"  双击组名 / 按 F2 —— 改组名，组员自动跟着改\n"
         L"  选中人 +「移组」—— 弹列表选目标组，一步到位\n\n"
         L"名单格式（推荐 csv，UTF-8）：\n"
@@ -1159,22 +1184,36 @@ static void paint(HWND hwnd) {
 
     fillRect(dc, cr, g_p.bg);
 
-    // 顶栏
+    // 顶栏：小徽标 + 名称 + 副标题（byHry 并进副标题，不再挤在右角被徽标挡住）
     RECT hdr{0, 0, W, 46};
     fillRect(dc, hdr, g_p.panel);
-    text(dc, L"RANDOM PICKER", RECT{16, 0, 300, 46}, g_p.accent, g_fTitle);
-    text(dc, L"班级随机抽人", RECT{150, 0, 400, 46}, g_p.dim, g_fBody);
+    int x = 14;
+    Gdiplus::Bitmap* hdrLogo = g_theme ? g_logoIns : g_logoGeek;
+    if (hdrLogo) {
+        Gdiplus::Graphics gx(dc);
+        gx.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+        int lh = 30, lw = (int)(lh * ((double)hdrLogo->GetWidth() / hdrLogo->GetHeight()));
+        gx.DrawImage(hdrLogo, x, (46 - lh) / 2, lw, lh);
+        x += lw + 10;
+    }
+    SelectObject(dc, g_fTitle);
+    SIZE ts{0, 0};
+    GetTextExtentPoint32W(dc, L"RANDOM PICKER", 13, &ts);
+    text(dc, L"RANDOM PICKER", RECT{x, 0, x + ts.cx + 4, 46}, g_p.accent, g_fTitle);
+    text(dc, L"班级随机抽人 · byHry", RECT{x + ts.cx + 14, 0, x + ts.cx + 220, 46}, g_p.dim, g_fBody);
     // 主题切换
     roundRect(dc, g_themeRect, 8, g_p.panel2, g_p.border);
     std::wstring tlabel = std::wstring(L"\u98ce\u683c\uff1a") + themeName() + L" \u21c4";  // 风格：xx ⇄
     text(dc, tlabel, g_themeRect, g_p.text, g_fSmall, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    text(dc, L"byHry", RECT{W - 78, 0, W - 54, 46}, g_p.dim, g_fSmall, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-    // CTW 标（真徽标，PNG 带透明，GDI+ 绘制）
-    if (g_logo) {
-        Gdiplus::Graphics gx(dc);
-        gx.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-        int lh = 36, lw = (int)(lh * ((double)g_logo->GetWidth() / g_logo->GetHeight()));
-        gx.DrawImage(g_logo, W - 16 - lw, (46 - lh) / 2, lw, lh);
+    // 右上角徽标（按主题换色，和主题按钮之间留出空隙，不再压到文字）
+    {
+        Gdiplus::Bitmap* logo = g_theme ? g_logoIns : g_logoGeek;
+        if (logo) {
+            Gdiplus::Graphics gx(dc);
+            gx.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            int lh = 34, lw = (int)(lh * ((double)logo->GetWidth() / logo->GetHeight()));
+            gx.DrawImage(logo, W - 14 - lw, (46 - lh) / 2, lw, lh);
+        }
     }
 
     // 左栏
@@ -1248,6 +1287,9 @@ static void paint(HWND hwnd) {
     // 结果卡
     roundRect(dc, g_cardRect, g_p.radius, g_p.panel, g_last.ok ? g_p.accent : g_p.border);
     if (g_last.ok) {
+        // 多人时滚轮翻动：先把后续绘制裁剪在卡片内，防止行画到卡外
+        IntersectClipRect(dc, g_cardRect.left + 1, g_cardRect.top + 1, g_cardRect.right - 1,
+                          g_cardRect.bottom - 1);
         RECT br{g_cardRect.left + 20, g_cardRect.top + 16, g_cardRect.right - 20, g_cardRect.top + 42};
         std::wstring title = g_last.isGroup ? L"抽中的组"
                                             : (g_last.list.size() > 1
@@ -1265,24 +1307,32 @@ static void paint(HWND hwnd) {
                      gr, g_p.text, g_fBody);
             }
         } else {
-            int maxRows = 5;
-            for (size_t i = 0; i < g_last.list.size() && i < (size_t)maxRows; i++) {
-                RECT nr{g_cardRect.left + 20, g_cardRect.top + 40 + (int)i * 28,
-                        g_cardRect.right - 20, g_cardRect.top + 68 + (int)i * 28};
+            int listTop = g_cardRect.top + 44;
+            int listBottom = g_cardRect.bottom - 30;  // 底部留一行翻动提示
+            int visRows = (listBottom - listTop) / 28;
+            if (visRows < 1) visRows = 1;
+            int total = (int)g_last.list.size();
+            int maxScroll = total > visRows ? total - visRows : 0;
+            if (g_cardScroll > maxScroll) g_cardScroll = maxScroll;
+            if (g_cardScroll < 0) g_cardScroll = 0;
+            for (int i = g_cardScroll; i < total && i < g_cardScroll + visRows; i++) {
+                int ry = listTop + (i - g_cardScroll) * 28;
+                RECT nr{g_cardRect.left + 20, ry, g_cardRect.right - 20, ry + 28};
                 std::wstring line = displayName(g_last.list[i]);
-                if (!g_last.list[i].group.empty()) line += L"  [" + g_last.list[i].group + L"]";
+                if (!g_last.list[i].group.empty()) line += L" \u00b7 " + g_last.list[i].group;  // · 组名，不再用方括号
                 text(dc, line, nr, g_p.accent, g_fMid, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             }
-            if (g_last.list.size() > (size_t)maxRows) {
-                RECT mr{g_cardRect.left + 20, g_cardRect.top + 40 + maxRows * 28,
-                        g_cardRect.right - 20, g_cardRect.top + 68 + maxRows * 28};
-                text(dc, L"…还有 " + std::to_wstring(g_last.list.size() - maxRows) + L" 人（导出记录看全部）",
-                     mr, g_p.dim, g_fSmall);
-            }
+            RECT fr{g_cardRect.left + 20, g_cardRect.bottom - 28, g_cardRect.right - 20, g_cardRect.bottom - 8};
+            std::wstring foot =
+                (maxScroll > 0)
+                    ? (L"第 " + std::to_wstring(g_cardScroll + 1) + L"–" +
+                       std::to_wstring(std::min(g_cardScroll + visRows, total)) + L" 人 / 共 " +
+                       std::to_wstring(total) + L" 人 · 滚轮翻动")
+                    : (L"共 " + std::to_wstring(total) + L" 人");
+            text(dc, foot, fr, g_p.dim, g_fSmall);
         }
-        RECT sr{g_cardRect.left + 20, g_cardRect.bottom - 46, g_cardRect.right - 20, g_cardRect.bottom - 16};
-        text(dc, L"seed " + g_last.seed, sr, g_p.dim, g_fMono,
-             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        SelectClipRgn(dc, nullptr);
+        // seed 不再常驻卡底：鼠标停在结果卡上时浮出（见 paint 末尾的 tooltip），留证仍在历史与导出里
     } else {
         RECT br{g_cardRect.left + 20, g_cardRect.top + 20, g_cardRect.right - 20, g_cardRect.bottom - 20};
         text(dc, L"按 空格 抽 1 人，或者上面填人数抽 N 人", br, g_p.dim, g_fBody);
@@ -1324,6 +1374,32 @@ static void paint(HWND hwnd) {
     text(dc, cnt, RECT{W - 400, H - 26, W - 12, H}, g_p.dim, g_fSmall, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
     text(dc, g_status, RECT{16, H - 26, W - 410, H}, g_p.dim2, g_fSmall,
          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+    // seed 悬停提示：seed 平时藏在结果卡里，鼠标停上来才浮出（留证仍在历史与导出）
+    if (g_tipOn && g_last.ok && !g_last.seed.empty()) {
+        std::wstring sd = g_last.seed;
+        std::vector<std::wstring> lines;  // 抽 N 人时 seed 是多个 16 位 hex，按空格折行
+        size_t p = 0;
+        while (p < sd.size()) {
+            size_t q = sd.find(L' ', p);
+            if (q == std::wstring::npos) q = sd.size();
+            lines.push_back(sd.substr(p, q - p));
+            p = q + 1;
+        }
+        int tw = 250, lh = 20, th = (int)lines.size() * lh + 34;
+        int tx = g_mouse.x + 16, ty = g_mouse.y + 20;
+        if (tx + tw > W - 8) tx = W - 8 - tw;
+        if (tx < 8) tx = 8;
+        if (ty + th > H - 30) ty = g_mouse.y - th - 10;
+        if (ty < 50) ty = 50;
+        RECT tr{tx, ty, tx + tw, ty + th};
+        roundRect(dc, tr, 6, g_p.panel2, g_p.accent);
+        text(dc, L"seed（抽取留证，可复现）", RECT{tx + 10, ty + 6, tx + tw - 10, ty + 24}, g_p.dim,
+             g_fSmall);
+        for (size_t i = 0; i < lines.size(); i++)
+            text(dc, lines[i], RECT{tx + 10, ty + 28 + (int)i * lh, tx + tw - 10, ty + 28 + (int)i * lh + lh},
+                 g_p.text, g_fMono);
+    }
 
     BitBlt(hdc, 0, 0, W, H, dc, 0, 0, SRCCOPY);
     SelectObject(dc, old);
@@ -1376,18 +1452,42 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_MOUSEMOVE: {
             int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            g_mouse = POINT{x, y};
+            if (!g_tipTracked) {  // 登记一次，鼠标离开窗口时收 WM_MOUSELEAVE
+                TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
+                TrackMouseEvent(&tme);
+                g_tipTracked = true;
+            }
+            bool tip = g_last.ok && PtInRect(&g_cardRect, g_mouse) && !g_last.seed.empty();
             Hit h = hitTest(x, y);
-            if (h.big != g_hoverBig || h.btn != g_hover || h.tab != g_hoverTab) {
+            bool hoverChanged = (h.big != g_hoverBig || h.btn != g_hover || h.tab != g_hoverTab);
+            if (hoverChanged) {
                 g_hoverBig = h.big;
                 g_hover = h.btn;
                 g_hoverTab = h.tab;
+            }
+            if (hoverChanged || tip != g_tipOn || tip)  // tooltip 要跟着鼠标走
+                InvalidateRect(hwnd, nullptr, FALSE);
+            g_tipOn = tip;
+            return 0;
+        }
+        case WM_MOUSELEAVE:
+            g_tipTracked = false;
+            if (g_tipOn) {
+                g_tipOn = false;
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
             return 0;
-        }
         case WM_MOUSEWHEEL: {
             int d = GET_WHEEL_DELTA_WPARAM(wp);
-            g_scroll += (d > 0 ? -3 : 3);
+            POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            ScreenToClient(hwnd, &pt);
+            if (g_last.ok && g_last.list.size() > 1 && PtInRect(&g_cardRect, pt)) {
+                g_cardScroll += (d > 0 ? -1 : 1);  // 光标在结果卡上：翻结果
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            g_scroll += (d > 0 ? -3 : 3);  // 否则翻左栏名单
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -1444,7 +1544,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     case B_RENAME: doRenameGroup(hwnd); return 0;
                     case B_DEL: doDelete(hwnd); return 0;
                     case B_UNDO: doUndo(hwnd); return 0;
-                    case B_INIT6: doInit6(hwnd); return 0;
+                    case B_INIT6: doInitGroups(hwnd); return 0;
                     case B_HIST: doExportHistory(hwnd); return 0;
                     case B_HELP: doHelp(hwnd); return 0;
                 }
@@ -1552,7 +1652,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nShow) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
-    if (g_logo) { delete g_logo; g_logo = nullptr; }
+    if (g_logoGeek) { delete g_logoGeek; g_logoGeek = nullptr; }
+    if (g_logoIns) { delete g_logoIns; g_logoIns = nullptr; }
     if (g_gdipToken) Gdiplus::GdiplusShutdown(g_gdipToken);
     return (int)msg.wParam;
 }

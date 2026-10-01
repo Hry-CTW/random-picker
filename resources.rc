@@ -1,5 +1,7 @@
-// 资源：CTW 标（CreateTheWorld）
-// 1  = exe / 标题栏图标（多尺寸 ico）
-// 201 = 右上角徽标用 PNG（GDI+ 绘制，保留透明通道）
+// 资源：Random Picker
+// 1   = exe / 标题栏 / 任务栏图标（多尺寸 ico，骰子五点设计）
+// 201 = 顶栏徽标 PNG（极客深色主题，GDI+ 绘制，保留透明通道）
+// 202 = 顶栏徽标 PNG（ins 浅色主题）
 1 ICON "assets/ctw.ico"
-201 RCDATA "assets/icon_dark.png"
+201 RCDATA "assets/logo_geek.png"
+202 RCDATA "assets/logo_ins.png"
