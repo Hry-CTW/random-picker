@@ -12,7 +12,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 安装 mingw-w64 交叉工具链
         run: |
@@ -30,7 +30,7 @@ jobs:
           ls -la picker.exe
 
       - name: 上传构建产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: picker-exe
           path: picker.exe
