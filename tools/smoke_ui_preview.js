@@ -64,6 +64,24 @@ chk('seed 为 3 段', d.querySelector('#card .sd').textContent.split(' ').length
     d.querySelector('#card .sd').textContent);
 chk('标题为「抽中的 3 人」', d.getElementById('card').textContent.includes('抽中的 3 人'));
 
+console.log('[4b] 抽 N 人的组分布（回归：随机范围必须是池长而非 n）');
+{
+  const seenGroups = new Set(), combos = new Set();
+  for (let r = 0; r < 60; r++) {
+    d.getElementById('nIn').value = '3';
+    click('bPickN');
+    const gs = [];
+    d.querySelectorAll('#card .pl').forEach(el => {
+      const m = el.textContent.match(/\[(.+?)\]$/);
+      if (m) { seenGroups.add(m[1]); gs.push(m[1]); }
+    });
+    combos.add(gs.slice().sort().join('/'));
+  }
+  chk('60 次抽 3 人覆盖全部 6 个组', seenGroups.size === 6, '实际 ' + [...seenGroups].join(','));
+  chk('抽出的组组合会变化（>10 种）', combos.size > 10, '实际 ' + combos.size + ' 种');
+  chk('不再恒定是前三组', !(combos.size === 1 && [...combos][0] === '一组/三/二'.split('/').sort().join('/')));
+}
+
 console.log('[5] 边界：人数超额 / 非法');
 d.getElementById('nIn').value = '99';
 click('bPickN');
