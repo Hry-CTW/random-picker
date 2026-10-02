@@ -243,7 +243,7 @@ static void computeLayout(HWND hwnd) {
     int ny = bigY + bigH + 10, nh = 40;
     g_nEditRect = RECT{rx, ny, rx + 66, ny + nh};
     g_nDropRect = RECT{rx + 66 + 6, ny, rx + 66 + 6 + 34, ny + nh};
-    g_big.push_back(Btn{BIG_NDROP, L"\u25be", g_nDropRect});  // ▾
+    g_big.push_back(Btn{BIG_NDROP, L"\u25bc", g_nDropRect});  
     int nbx = rx + 66 + 6 + 34 + 8;
     RECT pickNR{rx + 66 + 6 + 34 + 8, ny, rx + rw - 96, ny + nh};
     g_big.push_back(Btn{BIG_PICKN, L"\u62bd N \u4eba", pickNR});  // 抽 N 人
