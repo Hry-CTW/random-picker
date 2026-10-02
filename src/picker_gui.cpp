@@ -51,7 +51,7 @@ static Pal g_p = kGeek;
 static const wchar_t* themeName() { return g_theme ? L"ins" : L"极客"; }
 static void applyTheme(int t) { g_theme = t ? 1 : 0; g_p = g_theme ? kIns : kGeek; }
 
-static const wchar_t* kSignature = L"byHry · CTW";  // 署名，帮助里可见
+static const wchar_t* kSignature = L"by Hry · CTW";  // 署名，帮助里可见
 
 // ---------- 顶栏徽标（从资源加载 PNG，两套主题各一份）----------
 static Gdiplus::Bitmap* g_logoGeek = nullptr;
@@ -1184,7 +1184,7 @@ static void paint(HWND hwnd) {
 
     fillRect(dc, cr, g_p.bg);
 
-    // 顶栏：小徽标 + 名称 + 副标题（byHry 并进副标题，不再挤在右角被徽标挡住）
+    // 顶栏：小徽标 + 名称 + 副标题（by Hry 并进副标题，不再挤在右角被徽标挡住）
     RECT hdr{0, 0, W, 46};
     fillRect(dc, hdr, g_p.panel);
     int x = 14;
@@ -1200,7 +1200,7 @@ static void paint(HWND hwnd) {
     SIZE ts{0, 0};
     GetTextExtentPoint32W(dc, L"RANDOM PICKER", 13, &ts);
     text(dc, L"RANDOM PICKER", RECT{x, 0, x + ts.cx + 4, 46}, g_p.accent, g_fTitle);
-    text(dc, L"班级随机抽人 · byHry", RECT{x + ts.cx + 14, 0, x + ts.cx + 220, 46}, g_p.dim, g_fBody);
+    text(dc, L"班级随机抽人 · by Hry", RECT{x + ts.cx + 14, 0, x + ts.cx + 220, 46}, g_p.dim, g_fBody);
     // 主题切换
     roundRect(dc, g_themeRect, 8, g_p.panel2, g_p.border);
     std::wstring tlabel = std::wstring(L"\u98ce\u683c\uff1a") + themeName() + L" \u21c4";  // 风格：xx ⇄
@@ -1636,7 +1636,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nShow) {
     wc.hIcon = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(kResIcon), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE);
     RegisterClassW(&wc);
 
-    HWND hwnd = CreateWindowExW(0, L"PickerMainCls", L"随机抽人 · byHry · CTW",
+    HWND hwnd = CreateWindowExW(0, L"PickerMainCls", L"随机抽人 · by Hry · CTW",
                                 WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME, CW_USEDEFAULT, CW_USEDEFAULT,
                                 1040, 720, nullptr, nullptr, hInst, nullptr);
     if (!hwnd) return 1;
