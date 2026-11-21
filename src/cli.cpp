@@ -13,6 +13,11 @@ static void help() {
               << "  picker_cli pickgroup [--file 文件]          随机抽一个组\n"
               << "  picker_cli initgroups <组数> [--file 文件]  一键初始化 n 个组\n"
               << "  picker_cli rename <旧组名> <新组名> [--file 文件]\n"
+              << "  v2.2 人员组织管理 / 工作区：\n"
+              << "  picker_cli workspace <路径> [--save|--load]   保存/加载 JSON 工作区\n"
+              << "  picker_cli join <人序号> <组织> [--file 文件] 给人加组织(多对多)\n"
+              << "  picker_cli leave <人序号> <组织> [--file 文件] 给人退出组织\n"
+              << "  picker_cli orgs [--file 文件]                 列出人-组织关系\n"
               << "  默认文件：people.csv\n";
 }
 
@@ -23,8 +28,35 @@ static std::string fileArg(int argc, char** argv) {
     return "people.csv";
 }
 
+static bool isJsonPath(const std::string& p) {
+    std::string l = p;
+    for (char& c : l) c = (char)tolower((unsigned char)c);
+    return l.size() >= 5 && l.substr(l.size() - 5) == ".json";
+}
+
+// 通用加载：显式 .json 路径按工作区读，其余按 CSV 读（不改变旧命令行为）
 static bool load(Roster& r, int argc, char** argv, std::wstring& msg) {
-    return r.importFile(fileArg(argc, argv), false, msg);
+    std::string src = fileArg(argc, argv);
+    if (isJsonPath(src)) return r.loadWorkspace(src, msg);
+    return r.importFile(src, false, msg);
+}
+
+// v2.2：人员管理命令的工作存储。优先读同名 .json 工作区（保留多对多），
+// 没有则从 CSV 新建。这样 join/leave 多次调用之间不会丢组织关系。
+static std::string workspaceFor(const std::string& csvPath) {
+    size_t dot = csvPath.find_last_of('.');
+    return (dot == std::string::npos ? csvPath : csvPath.substr(0, dot)) + ".json";
+}
+static bool loadStore(Roster& r, int argc, char** argv, std::wstring& msg) {
+    std::string src = fileArg(argc, argv);
+    if (isJsonPath(src)) return r.loadWorkspace(src, msg);
+    std::string ws = workspaceFor(src);
+    FILE* f = fopen(ws.c_str(), "rb");
+    if (f) {
+        fclose(f);
+        return r.loadWorkspace(ws, msg);
+    }
+    return r.importFile(src, false, msg);
 }
 
 int main(int argc, char** argv) {
@@ -59,6 +91,9 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::cout << "OK  " << wide_to_utf8(msg) << "\n";
+        for (size_t i = 0; i < r.people.size(); i++)
+            std::cout << i + 1 << ". " << wide_to_utf8(displayName(r.people[i]))
+                      << " [" << wide_to_utf8(groupsText(r.people[i])) << "]\n";
         auto gs = r.groupList();
         for (size_t i = 0; i < gs.size(); i++)
             std::cout << "组 " << i << ": " << wide_to_utf8(gs[i]) << " (" << r.countInGroup(gs[i]) << " 人)\n";
@@ -170,17 +205,94 @@ int main(int argc, char** argv) {
         return ok ? 0 : 1;  // 没做变更（跳过）也用非零退出码，便于脚本断言
     }
 
-    // v2：改组名
+    // v2：改组名（v2.2：支持工作区，多组织内旧名同步）
     if (cmd == "rename" && argc >= 4) {
         std::wstring msg;
-        if (!load(r, argc, argv, msg)) {
+        if (!loadStore(r, argc, argv, msg)) {
             std::cout << "FAIL " << wide_to_utf8(msg) << "\n";
             return 1;
         }
         bool ok = r.renameGroup(utf8_to_wide(argv[2]), utf8_to_wide(argv[3]), msg);
         std::cout << (ok ? "OK  " : "FAIL ") << wide_to_utf8(msg) << "\n";
         for (auto& g : r.groupList()) std::cout << "  " << wide_to_utf8(g) << "\n";
+        if (ok) {
+            std::string src = fileArg(argc, argv);
+            std::string lower = src;
+            for (char& c : lower) c = (char)tolower((unsigned char)c);
+            std::string target = (lower.size() >= 5 && lower.substr(lower.size()-5) == ".json")
+                                 ? src : workspaceFor(src);
+            std::wstring wmsg;
+            if (r.saveWorkspace(target, wmsg)) std::cout << "WS  " << wide_to_utf8(wmsg) << "\n";
+        }
         return ok ? 0 : 1;
+    }
+
+    // v2.2：JSON 工作区保存/加载
+    if (cmd == "workspace" && argc >= 3) {
+        std::string mode = "save";
+        for (int i = 3; i < argc; i++)
+            if (std::string(argv[i]) == "--load") mode = "load";
+        std::wstring msg;
+        bool ok;
+        if (mode == "load") {
+            ok = r.loadWorkspace(argv[2], msg);
+        } else {
+            // --save：从 --file 读名单（若有）再写工作区
+            std::string src;
+            for (int i = 3; i < argc - 1; i++)
+                if (std::string(argv[i]) == "--file") src = argv[i + 1];
+            if (!src.empty()) {
+                if (!r.loadWorkspace(src, msg)) {  // v2.2：源必须是工作区（多对多无损）
+                    std::cout << "FAIL " << wide_to_utf8(msg) << "\n";
+                    return 1;
+                }
+            }
+            ok = r.saveWorkspace(argv[2], msg);
+        }
+        std::cout << (ok ? "OK  " : "FAIL ") << wide_to_utf8(msg) << "\n";
+        if (ok && mode == "load") {
+            for (size_t i = 0; i < r.people.size(); i++)
+                std::cout << i + 1 << ". " << wide_to_utf8(displayName(r.people[i]))
+                          << " [" << wide_to_utf8(groupsText(r.people[i])) << "]\n";
+            std::cout << "组织数=" << r.groupList().size() << "\n";
+        }
+        return ok ? 0 : 1;
+    }
+
+    // v2.2：加入/退出组织
+    if ((cmd == "join" || cmd == "leave") && argc >= 4) {
+        std::wstring msg;
+        if (!loadStore(r, argc, argv, msg)) {
+            std::cout << "FAIL " << wide_to_utf8(msg) << "\n";
+            return 1;
+        }
+        int idx = atoi(argv[2]) - 1;  // 1-based 给人看
+        bool ok = r.toggleMembership(idx, utf8_to_wide(argv[3]), msg);
+        std::cout << (ok ? "OK  " : "FAIL ") << wide_to_utf8(msg) << "\n";
+        if (ok) {
+            std::cout << wide_to_utf8(displayName(r.people[idx])) << " 现属 ["
+                      << wide_to_utf8(groupsText(r.people[idx])) << "]\n";
+            std::wstring wmsg;
+            if (r.saveWorkspace(workspaceFor(fileArg(argc, argv)), wmsg))
+                std::cout << "WS  " << wide_to_utf8(wmsg) << "\n";
+        }
+        return ok ? 0 : 1;
+    }
+
+    // v2.2：列出人-组织关系（多对多）
+    if (cmd == "orgs") {
+        std::wstring msg;
+        if (!loadStore(r, argc, argv, msg)) {
+            std::cout << "FAIL " << wide_to_utf8(msg) << "\n";
+            return 1;
+        }
+        for (size_t i = 0; i < r.people.size(); i++)
+            std::cout << i + 1 << ". " << wide_to_utf8(displayName(r.people[i]))
+                      << " [" << wide_to_utf8(groupsText(r.people[i])) << "]\n";
+        std::cout << "--- 组织 ↔ 人数 ---\n";
+        for (const std::wstring& g : r.groupList())
+            std::cout << wide_to_utf8(g) << ": " << r.countInGroup(g) << "\n";
+        return 0;
     }
 
     help();

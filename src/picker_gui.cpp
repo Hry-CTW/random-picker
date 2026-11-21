@@ -115,7 +115,7 @@ struct LastPick {
     std::wstring where;
 };
 static LastPick g_last;
-static std::wstring g_status = L"就绪 · 空格=抽 1 人  G=抽组  T=换风格  Ctrl+O=导入  H=帮助";
+static std::wstring g_status = L"就绪 · 空格=抽 1 人  G=抽组  P=人员管理  T=换风格  Ctrl+O=导入  H=帮助";
 
 // 误删撤销：只保留最近一次删除，够老师救急，不搞多级栈
 static bool g_hasUndo = false;
@@ -124,7 +124,7 @@ static int g_undoIndex = -1;
 
 enum {
     B_IMPORT = 1, B_SAVE, B_NOREPEAT, B_RESET, B_ADD, B_MOVE, B_RENAME,
-    B_DEL, B_UNDO, B_INIT6, B_HIST, B_HELP,
+    B_DEL, B_UNDO, B_INIT6, B_HIST, B_HELP, B_MANAGE,
     BIG_PICK1 = 100, BIG_PICKGROUP, BIG_PICKN, BIG_NDROP, BIG_PICKALL = 110
 };
 
@@ -267,8 +267,9 @@ static void computeLayout(HWND hwnd) {
         {B_ADD, L"加人 A"},             {B_MOVE, L"移组 M"},
         {B_RENAME, L"组改名 F2"},       {B_DEL, L"删除 Del"},
         {B_UNDO, L"撤销 Ctrl+Z"},       {B_INIT6, L"一键 N 组"},
-        {B_HIST, L"导出记录"},          {B_HELP, L"帮助 H"},
+        {B_HIST, L"导出记录"},          {B_MANAGE, L"人员管理 P"},
     };
+    // 帮助按钮移到哪？保持 12 个按钮 6×2：把「帮助」并入快捷键 H，按钮位给「人员管理」
     int cols = 6;
     int bw = (rw - (cols - 1) * 8) / cols;
     int by = H - 26 - btnAreaH;
@@ -358,6 +359,24 @@ static bool openFileDlg(HWND hwnd, std::wstring& out, bool save) {
         ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
         if (!GetOpenFileNameW(&ofn)) return false;
     }
+    out = buf;
+    return true;
+}
+
+// v2.2：工作区 .json 专用文件对话框（不跟 CSV 过滤器混用）
+static bool workspaceFileDlg(HWND hwnd, std::wstring& out, bool save) {
+    wchar_t buf[MAX_PATH] = {0};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd;
+    ofn.lpstrFile = buf;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFilter = L"工作区文件 (*.json)\0*.json\0所有文件\0*.*\0";
+    ofn.lpstrDefExt = L"json";
+    ofn.Flags = save ? (OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST)
+                     : (OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST);
+    bool ok = save ? GetSaveFileNameW(&ofn) : GetOpenFileNameW(&ofn);
+    if (!ok) return false;
     out = buf;
     return true;
 }
@@ -840,6 +859,322 @@ static void notice(HWND hwnd, const std::wstring& body) {
     confirmDialog(hwnd, L"\u63d0\u793a", body, L"\u597d", L"\u5173\u95ed");  // 提示 / 好 / 关闭
 }
 
+// ---------- v2.2 人员管理窗口（自绘，勾选组织 = 多对多）----------
+
+// 写状态日志：wine 截不到窗口，用日志文件自证 GUI 交互确实发生（验收用）
+static void mgmtLog(const std::wstring& line) {
+    std::string cur = readFileBytes("status.log");
+    std::string add = "[" + wide_to_utf8(nowStamp()) + "] " + wide_to_utf8(line) + "\n";
+    writeFileBytes("status.log", cur + add);
+}
+
+enum {
+    M_ADD = 1, M_EDIT, M_DELP, M_ADDORG, M_DELORG, M_SAVEWS, M_LOADWS, M_CLOSE
+};
+
+struct MgmtCtx {
+    int sel = -1;        // 选中的人（people 下标）
+    int pScroll = 0;     // 人员列表滚动
+    int oScroll = 0;     // 组织列表滚动
+    int hoverPerson = -1;
+    int hoverOrg = -1;
+    std::vector<RECT> personRows;
+    std::vector<RECT> orgRows;
+    std::vector<RECT> btns;
+    RECT statusLabelRect{0, 0, 0, 0};
+    std::wstring status;
+    bool done = false;
+};
+static MgmtCtx g_mg;
+static HWND g_mgWnd = nullptr;
+static const int kMgRow = 30;
+
+static void mgmtLayout(HWND hwnd) {
+    RECT cr;
+    GetClientRect(hwnd, &cr);
+    int W = cr.right;
+    // 人员行 / 组织行区域
+    g_mg.personRows.clear();
+    g_mg.orgRows.clear();
+    for (int i = 0; i < 40; i++) {
+        g_mg.personRows.push_back(RECT{14, 76 + i * kMgRow, 336, 76 + (i + 1) * kMgRow});
+        g_mg.orgRows.push_back(RECT{350, 76 + i * kMgRow, W - 14, 76 + (i + 1) * kMgRow});
+    }
+    // 底部按钮两行
+    g_mg.btns.clear();
+    struct D { int id; const wchar_t* label; };
+    std::vector<D> row1 = {
+        {M_ADD, L"\u52a0\u4eba"}, {M_EDIT, L"\u6539\u4eba"}, {M_DELP, L"\u5220\u4eba"},
+        {M_ADDORG, L"\u52a0\u7ec4\u7ec7"}, {M_DELORG, L"\u5220\u7ec4\u7ec7"},
+    };
+    std::vector<D> row2 = {
+        {M_SAVEWS, L"\u4fdd\u5b58\u5de5\u4f5c\u533a"}, {M_LOADWS, L"\u52a0\u8f7d\u5de5\u4f5c\u533a"},
+        {M_CLOSE, L"\u5173\u95ed"},
+    };
+    int by = cr.bottom - 96, bh = 34, gap = 8;
+    int w1 = (W - 28 - (int)row1.size() * gap) / (int)row1.size();
+    for (size_t i = 0; i < row1.size(); i++) {
+        int x = 14 + (int)i * (w1 + gap);
+        g_mg.btns.push_back(RECT{x, by, x + w1, by + bh});
+    }
+    int w2 = (W - 28 - (int)row2.size() * gap) / (int)row2.size();
+    for (size_t i = 0; i < row2.size(); i++) {
+        int x = 14 + (int)i * (w2 + gap);
+        g_mg.btns.push_back(RECT{x, by + bh + gap, x + w2, by + bh + gap + bh});
+    }
+    g_mg.statusLabelRect = RECT{14, cr.bottom - 126, W - 14, cr.bottom - 104};
+}
+
+static int hitMgmt(int x, int y, bool& isPerson, int& idx) {
+    isPerson = false; idx = -1;
+    for (size_t i = 0; i < g_mg.personRows.size(); i++) {
+        RECT r = g_mg.personRows[i];
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+            int real = g_mg.pScroll + (int)i;
+            if (real < (int)g_roster.people.size()) { isPerson = true; idx = real; }
+            return 1;
+        }
+    }
+    for (size_t i = 0; i < g_mg.orgRows.size(); i++) {
+        RECT r = g_mg.orgRows[i];
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+            int real = g_mg.oScroll + (int)i;
+            auto all = g_roster.groupList();
+            if (real < (int)all.size()) { isPerson = false; idx = real; return 2; }
+        }
+    }
+    return 0;
+}
+
+static LRESULT CALLBACK MgmtProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_CREATE:
+            mgmtLayout(hwnd);
+            return 0;
+        case WM_SIZE:
+            mgmtLayout(hwnd);
+            return 0;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(hwnd, &ps);
+            RECT cr;
+            GetClientRect(hwnd, &cr);
+            fillRect(dc, cr, g_p.bg);
+            SetBkMode(dc, TRANSPARENT);
+
+            // 标题
+            RECT tr{14, 14, cr.right - 14, 44};
+            text(dc, L"\u4eba\u5458\u7ba1\u7406 \u00b7 \u7ec4\u7ec7\u5173\u7cfb", tr, g_p.accent, g_fMid);  // 人员管理 · 组织关系
+            text(dc, L"\u70b9\u4eba\u540e\u53f3\u4fa7\u52fe\u9009\u7ec4\u7ec7\uff08\u53ef\u591a\u9009\uff09", 
+                 RECT{14, 48, cr.right - 14, 72}, g_p.dim, g_fSmall);  // 点人后右侧勾选组织（可多选）
+
+            // 左栏：人员
+            auto& ppl = g_roster.people;
+            int pv = 0;
+            for (int i = 0; i < (int)g_mg.personRows.size(); i++) {
+                int real = g_mg.pScroll + i;
+                if (real >= (int)ppl.size()) break;
+                RECT r = g_mg.personRows[i];
+                if (real == g_mg.sel) fillRect(dc, r, g_p.sel);
+                else if (real == g_mg.hoverPerson) fillRect(dc, r, g_p.hot);
+                std::wstring label = displayName(ppl[real]) + L"  [" + groupsText(ppl[real]) + L"]";
+                text(dc, label, RECT{r.left + 8, r.top, r.right - 6, r.bottom},
+                     real == g_mg.sel ? g_p.accent : g_p.text, g_fBody);
+                pv++;
+            }
+            (void)pv;
+            frameRect(dc, RECT{10, 74, 340, cr.bottom - 132}, g_p.border);
+
+            // 右栏：组织勾选
+            auto all = g_roster.groupList();
+            Person* cur = (g_mg.sel >= 0 && g_mg.sel < (int)ppl.size()) ? &ppl[g_mg.sel] : nullptr;
+            for (int i = 0; i < (int)g_mg.orgRows.size(); i++) {
+                int real = g_mg.oScroll + i;
+                if (real >= (int)all.size()) break;
+                RECT r = g_mg.orgRows[i];
+                if (real == g_mg.hoverOrg) fillRect(dc, r, g_p.hot);
+                bool on = cur && cur->inGroup(all[real]);
+                // 画复选框
+                RECT box{r.left + 10, r.top + 6, r.left + 28, r.bottom - 6};
+                fillRect(dc, box, g_p.panel2);
+                frameRect(dc, box, on ? g_p.accent : g_p.border);
+                if (on) text(dc, L"\u2713", box, g_p.accent, g_fBody, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                text(dc, all[real] + (cur ? L"" : L"  (\u672a\u9009\u4eba)"),
+                     RECT{r.left + 38, r.top, r.right - 6, r.bottom},
+                     on ? g_p.accent : g_p.text, g_fBody);  // 未选人
+            }
+            frameRect(dc, RECT{346, 74, cr.right - 10, cr.bottom - 132}, g_p.border);
+
+            // 状态行
+            text(dc, g_mg.status, g_mg.statusLabelRect, g_p.dim, g_fSmall);
+
+            // 按钮
+            static const wchar_t* labels[] = {
+                L"\u52a0\u4eba", L"\u6539\u4eba", L"\u5220\u4eba", L"\u52a0\u7ec4\u7ec7", L"\u5220\u7ec4\u7ec7",
+                L"\u4fdd\u5b58\u5de5\u4f5c\u533a", L"\u52a0\u8f7d\u5de5\u4f5c\u533a", L"\u5173\u95ed"
+            };
+            int ids[] = {M_ADD, M_EDIT, M_DELP, M_ADDORG, M_DELORG, M_SAVEWS, M_LOADWS, M_CLOSE};
+            for (size_t i = 0; i < g_mg.btns.size() && i < 8; i++) {
+                roundRect(dc, g_mg.btns[i], g_p.radius, g_p.panel2, g_p.border);
+                text(dc, labels[i], g_mg.btns[i], g_p.text, g_fBody, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                (void)ids[i];
+            }
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_MOUSEMOVE: {
+            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            bool isP; int idx;
+            int hit = hitMgmt(x, y, isP, idx);
+            int hp = (hit == 1) ? idx : -1, ho = (hit == 2) ? idx : -1;
+            if (hp != g_mg.hoverPerson || ho != g_mg.hoverOrg) {
+                g_mg.hoverPerson = hp; g_mg.hoverOrg = ho;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+        case WM_LBUTTONDOWN: {
+            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            // 按钮
+            for (size_t i = 0; i < g_mg.btns.size(); i++) {
+                RECT r = g_mg.btns[i];
+                if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+                    int ids[] = {M_ADD, M_EDIT, M_DELP, M_ADDORG, M_DELORG, M_SAVEWS, M_LOADWS, M_CLOSE};
+                    int id = ids[i < 8 ? i : 7];
+                    std::wstring msg;
+                    switch (id) {
+                        case M_CLOSE:
+                            g_mg.done = true; DestroyWindow(hwnd); return 0;
+                        case M_ADD: {
+                            std::vector<std::wstring> out;
+                            if (inputDialog(hwnd, L"\u52a0\u4eba", {L"\u59d3\u540d", L"\u82f1\u6587\u540d(\u53ef\u7a7a)", L"\u5b66\u53f7(\u53ef\u7a7a)"}, out)) {
+                                Person p; p.name = out[0]; p.en = out.size()>1?out[1]:L""; p.sid = out.size()>2?out[2]:L"";
+                                if (g_roster.addPerson(p, msg)) { g_mg.sel = (int)g_roster.people.size()-1; mgmtLog(L"GUI \u52a0\u4eba: "+displayName(p)); }
+                            }
+                            break;
+                        }
+                        case M_EDIT: {
+                            if (g_mg.sel < 0) { msg = L"\u5148\u9009\u4e00\u4e2a\u4eba"; break; }
+                            Person& old = g_roster.people[g_mg.sel];
+                            std::vector<std::wstring> out;
+                            if (inputDialog(hwnd, L"\u6539\u4eba", {L"\u59d3\u540d", L"\u82f1\u6587\u540d", L"\u5b66\u53f7"}, out,
+                                            {old.name, old.en, old.sid})) {
+                                Person p = old; p.name = out[0]; p.en = out[1]; p.sid = out[2];
+                                if (g_roster.updatePerson(g_mg.sel, p, msg)) mgmtLog(L"GUI \u6539\u4eba: "+displayName(p));
+                            }
+                            break;
+                        }
+                        case M_DELP: {
+                            if (g_mg.sel < 0) { msg = L"\u5148\u9009\u4e00\u4e2a\u4eba"; break; }
+                            std::wstring nm = displayName(g_roster.people[g_mg.sel]);
+                            if (confirmDialog(hwnd, L"\u5220\u4eba\u786e\u8ba4", L"\u786e\u5b9a\u5220\u9664 "+nm+L"?", L"\u5220\u9664", L"\u53d6\u6d88")==1) {
+                                g_roster.removeAt(g_mg.sel); g_mg.sel = -1;
+                                msg = L"\u5df2\u5220\u9664"; mgmtLog(L"GUI \u5220\u4eba: "+nm);
+                            }
+                            break;
+                        }
+                        case M_ADDORG: {
+                            std::vector<std::wstring> out;
+                            if (inputDialog(hwnd, L"\u65b0\u5efa\u7ec4\u7ec7", {L"\u7ec4\u7ec7\u540d"}, out)) {
+                                if (g_roster.addOrganization(out[0], msg)) mgmtLog(L"GUI \u52a0\u7ec4\u7ec7: "+out[0]);
+                            }
+                            break;
+                        }
+                        case M_DELORG: {
+                            auto all = g_roster.groupList();
+                            if (all.empty()) { msg = L"\u6ca1\u6709\u7ec4\u7ec7"; break; }
+                            int k = popupList(hwnd, RECT{x-80, y, x+80, y+30}, all);
+                            if (k >= 0) {
+                                if (g_roster.removeOrganization(all[k], msg)) mgmtLog(L"GUI \u5220\u7ec4\u7ec7: "+all[k]);
+                            }
+                            break;
+                        }
+                        case M_SAVEWS:
+                        case M_LOADWS: {
+                            std::wstring path;
+                            if (workspaceFileDlg(hwnd, path, id == M_SAVEWS)) {
+                                if (id == M_SAVEWS) { if (g_roster.saveWorkspace(wide_to_utf8(path), msg)) mgmtLog(L"GUI \u4fdd\u5b58\u5de5\u4f5c\u533a: "+path); }
+                                else { if (g_roster.loadWorkspace(wide_to_utf8(path), msg)) { g_mg.sel = -1; mgmtLog(L"GUI \u52a0\u8f7d\u5de5\u4f5c\u533a: "+path); } }
+                            }
+                            break;
+                        }
+                    }
+                    g_mg.status = msg;
+                    mgmtLog(msg);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+            // 人员行：选中
+            bool isP; int idx;
+            int hit = hitMgmt(x, y, isP, idx);
+            if (hit == 1) {
+                g_mg.sel = idx;
+                g_mg.status = L"\u9009\u4e2d: " + displayName(g_roster.people[idx]) + L" - \u53f3\u4fa7\u52fe\u9009\u7ec4\u7ec7";
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            // 组织行：切换选中人的成员关系（多对多核心）
+            if (hit == 2 && g_mg.sel >= 0) {
+                auto all = g_roster.groupList();
+                if (idx >= 0 && idx < (int)all.size()) {
+                    std::wstring msg;
+                    if (g_roster.toggleMembership(g_mg.sel, all[idx], msg)) {
+                        g_mg.status = msg;
+                        mgmtLog(L"GUI \u5207\u6362\u6210\u5458: "+msg);
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                    }
+                }
+                return 0;
+            }
+            return 0;
+        }
+        case WM_MOUSEWHEEL: {
+            int delta = GET_WHEEL_DELTA_WPARAM(wp);
+            g_mg.pScroll -= (delta / WHEEL_DELTA) * 2;
+            if (g_mg.pScroll < 0) g_mg.pScroll = 0;
+            int maxS = (int)g_roster.people.size() - (int)g_mg.personRows.size();
+            if (g_mg.pScroll > maxS) g_mg.pScroll = maxS < 0 ? 0 : maxS;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        case WM_KEYDOWN:
+            if (wp == VK_ESCAPE) { g_mg.done = true; DestroyWindow(hwnd); return 0; }
+            return 0;
+        case WM_DESTROY:
+            g_mgWnd = nullptr;
+            return 0;  // 子窗口绝不 PostQuitMessage
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static void doManage(HWND parent) {
+    g_mg = MgmtCtx{};
+    g_mg.status = L"\u70b9\u5de6\u4fa7\u9009\u4eba\uff0c\u53f3\u4fa7\u52fe\u9009\u6240\u5c5e\u7ec4\u7ec7\uff08\u53ef\u591a\u9009\uff09\uff1bCtrl+S \u4fdd\u5b58\u5de5\u4f5c\u533a";
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = MgmtProc;
+    wc.hInstance = GetModuleHandle(nullptr);
+    wc.lpszClassName = L"PickerMgmtCls";
+    wc.hbrBackground = CreateSolidBrush(g_p.bg);
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    RegisterClassW(&wc);
+
+    EnableWindow(parent, FALSE);
+    g_mgWnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"PickerMgmtCls", L"\u4eba\u5458\u7ba1\u7406 / People",  // 人员管理 / People
+                              WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+                              CW_USEDEFAULT, CW_USEDEFAULT, 860, 600, parent, nullptr,
+                              GetModuleHandle(nullptr), nullptr);
+    if (!g_mgWnd) { EnableWindow(parent, TRUE); return; }
+    MSG msg;
+    while (!g_mg.done && GetMessageW(&msg, nullptr, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    if (g_mgWnd) { DestroyWindow(g_mgWnd); g_mgWnd = nullptr; }
+    EnableWindow(parent, TRUE);
+    SetForegroundWindow(parent);
+}
+
 // ---------- 动作 ----------
 static std::wstring scopeName() {
     if (g_scope < 0) return L"全班";
@@ -1121,7 +1456,7 @@ static void doToggleTheme(HWND hwnd) {
 
 static void doHelp(HWND hwnd) {
     std::wstring s =
-        L"班级随机抽人工具  v2.1\n"
+        L"班级随机抽人工具  v2.2\n"
         L"----------------------------\n"
         L"最常用的三件事：\n"
         L"  抽 1 人   右上角大按钮 / 空格\n"
@@ -1136,7 +1471,8 @@ static void doHelp(HWND hwnd) {
         L"  R         重置已抽记录\n"
         L"  T         切换外观（极客深色 / ins 浅色）\n"
         L"  A         添加成员\n"
-        L"  M         把选中的人移到别的组（弹列表选，不用打字）\n"
+        L"  M         把选中的人移到别的组（单组快捷操作）\n"
+        L"  P         人员管理（多对多组织关系 + JSON 工作区持久化）\n"
         L"  F2        给当前组改名（双击组名也可以）\n"
         L"  Del       删除选中的人（会先问一次，删错可 Ctrl+Z 撤销）\n"
         L"  Ctrl+Z    撤销上一次删除\n"
@@ -1147,6 +1483,12 @@ static void doHelp(HWND hwnd) {
         L"  点「一键 N 组」—— 输入组数（不一定是 6），没分组的同学会平均分进去\n"
         L"  双击组名 / 按 F2 —— 改组名，组员自动跟着改\n"
         L"  选中人 +「移组」—— 弹列表选目标组，一步到位\n\n"
+        L"v2.2 人员管理（按 P）：\n"
+        L"  一个人可以同时属于多个组织（多对多），比如既在「一组」又在「班委」\n"
+        L"  点左边的人 → 右边勾选他所属的组织（可多选）；组织可增删\n"
+        L"  「保存工作区」存 .json（完整保留多对多），下次「加载工作区」原样恢复\n"
+        L"  · 注意：同一个人若在多个组织里，按不同组织抽签都可能被抽到（范围重叠）\n"
+        L"  · CSV 仍可读可存，但 CSV 只记一个主组；多组织请用 .json 工作区\n\n"
         L"名单格式（推荐 csv，UTF-8）：\n"
         L"  姓名,组别,学号\n"
         L"  张三,一组,20260101\n"
@@ -1547,6 +1889,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     case B_INIT6: doInitGroups(hwnd); return 0;
                     case B_HIST: doExportHistory(hwnd); return 0;
                     case B_HELP: doHelp(hwnd); return 0;
+                    case B_MANAGE: doManage(hwnd); return 0;
                 }
             }
             if (x >= g_themeRect.left && x <= g_themeRect.right && y >= g_themeRect.top &&
@@ -1586,6 +1929,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case 'T': doToggleTheme(hwnd); return 0;
                 case 'A': doAdd(hwnd); return 0;
                 case 'M': doMove(hwnd); return 0;
+                case 'P': doManage(hwnd); return 0;
                 case 'H': doHelp(hwnd); return 0;
                 case VK_F2: doRenameGroup(hwnd); return 0;
                 case VK_DELETE: doDelete(hwnd); return 0;
@@ -1619,6 +1963,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nShow) {
     loadLogo(hInst);
+    // v2.2：启动时若 exe 同目录有 workspace.json，自动加载（多对多持久化开箱即用）
+    {
+        wchar_t exePath[MAX_PATH] = {0};
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        std::wstring ws = exePath;
+        size_t slash = ws.find_last_of(L"\\/");
+        ws = (slash == std::wstring::npos ? std::wstring() : ws.substr(0, slash + 1)) + L"workspace.json";
+        FILE* f = _wfopen(ws.c_str(), L"rb");
+        if (f) {
+            fclose(f);
+            std::wstring msg;
+            if (g_roster.loadWorkspace(wide_to_utf8(ws), msg))
+                g_status = msg + L" · \u7a7a\u683c\u5f00\u62bd";  // 空格开抽
+        }
+    }
     g_uiFace = pickUIFont();
     g_fTitle = makeFont(16, 600, g_uiFace);
     g_fBody = makeFont(15, 400, g_uiFace);

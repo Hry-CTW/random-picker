@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <map>
@@ -265,6 +266,43 @@ std::string decodeText(const std::string& raw, std::string& encName) {
 std::wstring displayName(const Person& p) {
     if (p.en.empty()) return p.name;
     return p.name + L" (" + p.en + L")";
+}
+
+static std::wstring normGroup(const std::wstring& g);  // 前置声明（定义在 Roster 区）
+
+// v2.2：成员判定与规范化
+bool Person::inGroup(const std::wstring& g) const {
+    std::wstring want = normGroup(g);
+    for (const std::wstring& x : groups)
+        if (normGroup(x) == want) return true;
+    // groups 为空时回退到旧的 group 字段（兼容 CSV 导入/旧工作区）
+    if (groups.empty() && !group.empty()) return normGroup(group) == want;
+    return false;
+}
+
+void Person::normalize() {
+    // 去掉空项与重复项，保持顺序
+    std::vector<std::wstring> clean;
+    for (const std::wstring& g : groups) {
+        std::wstring t = trim(g);
+        if (t.empty()) continue;
+        if (std::find(clean.begin(), clean.end(), t) == clean.end()) clean.push_back(t);
+    }
+    groups = clean;
+    if (!groups.empty())
+        group = groups[0];                 // 主组 = 第一个组织
+    else if (!group.empty())
+        groups.push_back(group);           // 只有旧 group 时把它当唯一组织
+}
+
+std::wstring groupsText(const Person& p) {
+    if (p.groups.empty()) return p.group.empty() ? L"\u672a\u5206\u7ec4" : p.group;  // 未分组
+    std::wstring out;
+    for (size_t i = 0; i < p.groups.size(); i++) {
+        if (i) out += L" \u00b7 ";  // ·
+        out += p.groups[i];
+    }
+    return out;
 }
 
 // ---------- 文本解析 ----------
@@ -559,18 +597,19 @@ static std::vector<std::vector<std::wstring>> parseXlsx(const std::string& data,
 std::vector<std::wstring> Roster::groupList() const {
     std::vector<std::wstring> gs = groups;
     for (const Person& p : people) {
-        std::wstring g = p.group.empty() ? L"未分组" : p.group;
-        if (std::find(gs.begin(), gs.end(), g) == gs.end()) gs.push_back(g);
+        // v2.2：一个人可能属于多个组织，全都要进组序
+        std::vector<std::wstring> pgs = p.groups.empty()
+            ? std::vector<std::wstring>{normGroup(p.group)} : p.groups;
+        for (const std::wstring& g : pgs)
+            if (std::find(gs.begin(), gs.end(), g) == gs.end()) gs.push_back(g);
     }
     return gs;
 }
 
 int Roster::countInGroup(const std::wstring& g) const {
     int n = 0;
-    for (const Person& p : people) {
-        std::wstring pg = p.group.empty() ? L"未分组" : p.group;
-        if (pg == g) n++;
-    }
+    for (const Person& p : people)
+        if (p.inGroup(g)) n++;   // v2.2：多对多成员判定
     return n;
 }
 
@@ -581,7 +620,7 @@ int Roster::countInScope(int scope) const {
     auto gs = groupList();
     int n = 0;
     for (const Person& p : people) {
-        if (scope >= 0 && scope < (int)gs.size() && normGroup(p.group) != gs[scope]) continue;
+        if (scope >= 0 && scope < (int)gs.size() && !p.inGroup(gs[scope])) continue;
         if (noRepeat && drawn.count(p.name)) continue;
         n++;
     }
@@ -593,7 +632,7 @@ static std::vector<int> collectCands(const std::vector<Person>& people, const st
                                      int scope, const std::set<std::wstring>& drawn, bool noRepeat) {
     std::vector<int> cand;
     for (int i = 0; i < (int)people.size(); i++) {
-        if (scope >= 0 && scope < (int)gs.size() && normGroup(people[i].group) != gs[scope]) continue;
+        if (scope >= 0 && scope < (int)gs.size() && !people[i].inGroup(gs[scope])) continue;
         if (noRepeat && drawn.count(people[i].name)) continue;
         cand.push_back(i);
     }
@@ -715,8 +754,10 @@ bool Roster::initGroups(int n, std::wstring& msg) {
     // 还没分组的人轮流分进去（按名单顺序，不随机——分组不是抽取）
     int assigned = 0;
     for (Person& p : people) {
-        if (!p.group.empty() && p.group != L"未分组") continue;
-        p.group = groups[assigned % (int)groups.size()];
+        if (!p.groups.empty() || (!p.group.empty() && p.group != L"未分组")) continue;
+        p.groups.clear();
+        p.groups.push_back(groups[assigned % (int)groups.size()]);
+        p.normalize();
         assigned++;
     }
     msg = L"已补到 " + std::to_wstring(groups.size()) + L" 个组" +
@@ -734,7 +775,11 @@ bool Roster::regroupAll(int n, std::wstring& msg) {
         msg = L"已经搭好 " + std::to_wstring(n) + L" 个组的空架子，导入名单后再分人";
         return true;
     }
-    for (size_t i = 0; i < people.size(); i++) people[i].group = groups[i % (size_t)n];
+    for (size_t i = 0; i < people.size(); i++) {
+        people[i].groups.clear();
+        people[i].groups.push_back(groups[i % (size_t)n]);
+        people[i].normalize();
+    }
     int per = (int)people.size() / n;
     int rest = (int)people.size() % n;
     msg = L"已把全班 " + std::to_wstring(people.size()) + L" 人分成 " + std::to_wstring(n) + L" 组：每组 " +
@@ -760,25 +805,123 @@ bool Roster::renameGroup(const std::wstring& oldName, const std::wstring& nw, st
     for (std::wstring& g : groups)
         if (g == oldName) g = nw;
     int moved = 0;
-    for (Person& p : people)
-        if (normGroup(p.group) == oldName) {
-            p.group = nw;
-            moved++;
+    for (Person& p : people) {
+        bool hit = false;
+        // v2.2：改所有组织名，不只主组
+        for (std::wstring& g : p.groups)
+            if (normGroup(g) == oldName) { g = nw; hit = true; }
+        if (p.groups.empty() && normGroup(p.group) == oldName) {
+            p.group = nw; hit = true;
         }
-    msg = L"组名已改为「" + nw + L"」" + (moved ? (L"（" + std::to_wstring(moved) + L" 人跟着改）") : L"");
+        if (hit) { p.normalize(); moved++; }
+    }
+    msg = L"组织名已改为「" + nw + L"」" + (moved ? (L"（" + std::to_wstring(moved) + L" 人跟着改）") : L"");
     return true;
 }
 
 void Roster::resetDrawn() { drawn.clear(); }
 
-void Roster::add(const Person& p) { people.push_back(p); }
+void Roster::add(const Person& p) {
+    Person copy = p;
+    copy.normalize();
+    people.push_back(copy);
+}
 
 void Roster::removeAt(int i) {
     if (i >= 0 && i < (int)people.size()) people.erase(people.begin() + i);
 }
 
 void Roster::setGroup(int i, const std::wstring& g) {
-    if (i >= 0 && i < (int)people.size()) people[i].group = g;
+    // 旧「移组」是单组快捷操作：把成员关系设为单元素集合
+    if (i >= 0 && i < (int)people.size()) {
+        people[i].groups.clear();
+        if (!g.empty()) people[i].groups.push_back(g);
+        people[i].normalize();
+    }
+}
+
+// ---------- v2.2 人员·组织关系管理 ----------
+
+bool Roster::setMemberships(int idx, const std::vector<std::wstring>& gs, std::wstring& msg) {
+    if (idx < 0 || idx >= (int)people.size()) { msg = L"没选中人"; return false; }
+    people[idx].groups = gs;
+    people[idx].normalize();
+    // 组织集合也要进组序（这样新建的组织能在页签看到）
+    for (const std::wstring& g : people[idx].groups)
+        if (std::find(groups.begin(), groups.end(), g) == groups.end())
+            groups.push_back(g);
+    msg = L"已更新组织关系：" + displayName(people[idx]) + L" [" + groupsText(people[idx]) + L"]";
+    return true;
+}
+
+bool Roster::toggleMembership(int idx, const std::wstring& g, std::wstring& msg) {
+    if (idx < 0 || idx >= (int)people.size()) { msg = L"没选中人"; return false; }
+    std::wstring org = trim(g);
+    if (org.empty()) { msg = L"组织名不能为空"; return false; }
+    Person& p = people[idx];
+    auto it = std::find_if(p.groups.begin(), p.groups.end(),
+                           [&](const std::wstring& x) { return normGroup(x) == org; });
+    bool nowOn;
+    if (it != p.groups.end()) { p.groups.erase(it); nowOn = false; }
+    else { p.groups.push_back(org); nowOn = true; }
+    p.normalize();
+    if (std::find(groups.begin(), groups.end(), org) == groups.end()) groups.push_back(org);
+    msg = (nowOn ? L"已加入「" : L"已退出「") + org + L"」：" + displayName(p);
+    return true;
+}
+
+bool Roster::addOrganization(const std::wstring& g, std::wstring& msg) {
+    std::wstring org = trim(g);
+    if (org.empty()) { msg = L"组织名不能为空"; return false; }
+    auto all = groupList();
+    if (std::find(all.begin(), all.end(), org) != all.end()) {
+        msg = L"已经有叫「" + org + L"」的组织了"; return false;
+    }
+    groups.push_back(org);
+    msg = L"已新增组织：「" + org + L"」";
+    return true;
+}
+
+bool Roster::removeOrganization(const std::wstring& g, std::wstring& msg) {
+    auto it = std::find(groups.begin(), groups.end(), g);
+    if (it != groups.end()) groups.erase(it);
+    int removed = 0;
+    for (Person& p : people) {
+        auto before = p.groups.size();
+        p.groups.erase(std::remove_if(p.groups.begin(), p.groups.end(),
+                        [&](const std::wstring& x) { return normGroup(x) == g; }), p.groups.end());
+        if (p.groups.size() != before) { p.normalize(); removed++; }
+    }
+    if (it == groups.end() && removed == 0) { msg = L"没找到这个组织"; return false; }
+    msg = L"已删除组织「" + g + L"」" + (removed ? (L"，" + std::to_wstring(removed) + L" 人退出") : L"");
+    return true;
+}
+
+bool Roster::addPerson(const Person& p, std::wstring& msg) {
+    if (trim(p.name).empty()) { msg = L"姓名不能为空"; return false; }
+    for (const Person& x : people)
+        if (x.name == p.name && x.sid == p.sid && !p.sid.empty()) {
+            msg = L"已经有同名的同学（学号也相同）"; return false;
+        }
+    add(p);
+    for (const std::wstring& g : people.back().groups)
+        if (std::find(groups.begin(), groups.end(), g) == groups.end())
+            groups.push_back(g);
+    msg = L"已添加：" + displayName(people.back());
+    return true;
+}
+
+bool Roster::updatePerson(int idx, const Person& p, std::wstring& msg) {
+    if (idx < 0 || idx >= (int)people.size()) { msg = L"没选中人"; return false; }
+    if (trim(p.name).empty()) { msg = L"姓名不能为空"; return false; }
+    Person copy = p;
+    copy.normalize();
+    people[idx] = copy;
+    for (const std::wstring& g : copy.groups)
+        if (std::find(groups.begin(), groups.end(), g) == groups.end())
+            groups.push_back(g);
+    msg = L"已更新：" + displayName(people[idx]);
+    return true;
 }
 
 static bool hasAny(const std::wstring& s, const std::vector<std::wstring>& keys) {
@@ -857,6 +1000,7 @@ bool Roster::importFile(const std::string& path, bool append, std::wstring& msg)
         p.en = enCol >= 0 && enCol < (int)r.size() ? trim(r[enCol]) : L"";
         p.group = groupCol >= 0 && groupCol < (int)r.size() ? trim(r[groupCol]) : L"";
         p.sid = sidCol >= 0 && sidCol < (int)r.size() ? trim(r[sidCol]) : L"";
+        p.normalize();  // v2.2：单组导入 → 单元素组织集合
         loaded.push_back(p);
     }
     if (loaded.empty()) {
@@ -899,5 +1043,285 @@ bool Roster::exportHistory(const std::string& path, std::wstring& msg) {
         return false;
     }
     msg = L"已导出 " + std::to_wstring(history.size()) + L" 条抽取记录";
+    return true;
+}
+
+// ---------- v2.2 JSON 工作区持久化（自研极简 JSON，零依赖）----------
+
+namespace minijson {
+
+struct Val {
+    enum Type { NUL, STR, ARR, OBJ, NUM, BOOL } type = NUL;
+    std::string str;
+    std::vector<Val> arr;
+    std::map<std::string, Val> obj;
+    double num = 0;
+    bool boolean = false;
+
+    bool has(const std::string& k) const { return type == OBJ && obj.count(k) != 0; }
+    const Val* get(const std::string& k) const {
+        if (type != OBJ) return nullptr;
+        auto it = obj.find(k);
+        return it == obj.end() ? nullptr : &it->second;
+    }
+};
+
+class Parser {
+public:
+    explicit Parser(const std::string& s) : s_(s) {}
+    bool parse(Val& out) {
+        skipWs();
+        if (!value(out)) return false;
+        skipWs();
+        return pos_ == s_.size();
+    }
+private:
+    const std::string& s_;
+    size_t pos_ = 0;
+    void skipWs() {
+        while (pos_ < s_.size() && (s_[pos_] == ' ' || s_[pos_] == '\t' ||
+               s_[pos_] == '\n' || s_[pos_] == '\r')) pos_++;
+    }
+    bool lit(const char* x) {
+        size_t n = strlen(x);
+        if (s_.compare(pos_, n, x) != 0) return false;
+        pos_ += n;
+        return true;
+    }
+    bool value(Val& v) {
+        skipWs();
+        if (pos_ >= s_.size()) return false;
+        char c = s_[pos_];
+        if (c == '"') { v.type = Val::STR; return string(v.str); }
+        if (c == '{') return object(v);
+        if (c == '[') return array(v);
+        if (c == 't') { if (lit("true")) { v.type = Val::BOOL; v.boolean = true; return true; } return false; }
+        if (c == 'f') { if (lit("false")) { v.type = Val::BOOL; v.boolean = false; return true; } return false; }
+        if (c == 'n') { if (lit("null")) { v.type = Val::NUL; return true; } return false; }
+        return number(v);
+    }
+    bool object(Val& v) {
+        v.type = Val::OBJ; pos_++; skipWs();
+        if (pos_ < s_.size() && s_[pos_] == '}') { pos_++; return true; }
+        while (pos_ < s_.size()) {
+            skipWs();
+            if (pos_ >= s_.size() || s_[pos_] != '"') return false;
+            std::string key;
+            if (!string(key)) return false;
+            skipWs();
+            if (pos_ >= s_.size() || s_[pos_] != ':') return false;
+            pos_++; skipWs();
+            Val child;
+            if (!value(child)) return false;
+            v.obj[key] = child;
+            skipWs();
+            if (pos_ < s_.size() && s_[pos_] == ',') { pos_++; continue; }
+            if (pos_ < s_.size() && s_[pos_] == '}') { pos_++; return true; }
+            return false;
+        }
+        return false;
+    }
+    bool array(Val& v) {
+        v.type = Val::ARR; pos_++; skipWs();
+        if (pos_ < s_.size() && s_[pos_] == ']') { pos_++; return true; }
+        while (pos_ < s_.size()) {
+            Val child;
+            if (!value(child)) return false;
+            v.arr.push_back(child);
+            skipWs();
+            if (pos_ < s_.size() && s_[pos_] == ',') { pos_++; continue; }
+            if (pos_ < s_.size() && s_[pos_] == ']') { pos_++; return true; }
+            return false;
+        }
+        return false;
+    }
+    int hex4(unsigned& cp) {
+        cp = 0;
+        if (pos_ + 4 > s_.size()) return -1;
+        for (int i = 0; i < 4; i++) {
+            char c = s_[pos_++];
+            cp <<= 4;
+            if (c >= '0' && c <= '9') cp |= (c - '0');
+            else if (c >= 'a' && c <= 'f') cp |= (c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') cp |= (c - 'A' + 10);
+            else return -1;
+        }
+        return 0;
+    }
+    static void appendUtf8(std::string& out, unsigned cp) {
+        if (cp < 0x80) out += (char)cp;
+        else if (cp < 0x800) { out += (char)(0xC0 | (cp >> 6)); out += (char)(0x80 | (cp & 0x3F)); }
+        else if (cp < 0x10000) { out += (char)(0xE0 | (cp >> 12)); out += (char)(0x80 | ((cp >> 6) & 0x3F)); out += (char)(0x80 | (cp & 0x3F)); }
+        else { out += (char)(0xF0 | (cp >> 18)); out += (char)(0x80 | ((cp >> 12) & 0x3F)); out += (char)(0x80 | ((cp >> 6) & 0x3F)); out += (char)(0x80 | (cp & 0x3F)); }
+    }
+    bool string(std::string& out) {
+        if (pos_ >= s_.size() || s_[pos_] != '"') return false;
+        pos_++; out.clear();
+        while (pos_ < s_.size()) {
+            char c = s_[pos_++];
+            if (c == '"') return true;
+            if (c == '\\') {
+                if (pos_ >= s_.size()) return false;
+                char e = s_[pos_++];
+                switch (e) {
+                    case '"': out += '"'; break;
+                    case '\\': out += '\\'; break;
+                    case '/': out += '/'; break;
+                    case 'b': out += '\b'; break;
+                    case 'f': out += '\f'; break;
+                    case 'n': out += '\n'; break;
+                    case 'r': out += '\r'; break;
+                    case 't': out += '\t'; break;
+                    case 'u': {
+                        unsigned cp;
+                        if (hex4(cp) < 0) return false;
+                        appendUtf8(out, cp);
+                        break;
+                    }
+                    default: return false;
+                }
+            } else {
+                out += c;
+            }
+        }
+        return false;
+    }
+    bool number(Val& v) {
+        size_t start = pos_;
+        if (pos_ < s_.size() && (s_[pos_] == '-' || s_[pos_] == '+')) pos_++;
+        while (pos_ < s_.size() && ((s_[pos_] >= '0' && s_[pos_] <= '9') ||
+               s_[pos_] == '.' || s_[pos_] == 'e' || s_[pos_] == 'E')) pos_++;
+        if (pos_ == start) return false;
+        v.type = Val::NUM;
+        v.num = atof(s_.substr(start, pos_ - start).c_str());
+        return true;
+    }
+};
+
+static std::string quote(const std::string& s) {
+    std::string out = "\"";
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c < 0x20) { char b[8]; snprintf(b, sizeof(b), "\\u%04x", (unsigned)c); out += b; }
+                else out += (char)c;
+        }
+    }
+    out += '"';
+    return out;
+}
+
+}  // namespace minijson
+
+bool Roster::saveWorkspace(const std::string& path, std::wstring& msg) {
+    std::string out;
+    out += "{\n  \"format\": \"random-picker-workspace\",\n  \"version\": 2,\n";
+    // 完整组织序（固定组序 + 人身上出现过的组织，空组织也不能丢）
+    std::vector<std::wstring> allGs = groupList();
+    out += "  \"groups\": [";
+    for (size_t i = 0; i < allGs.size(); i++) {
+        if (i) out += ", ";
+        out += minijson::quote(wide_to_utf8(allGs[i]));
+    }
+    out += "],\n";
+    // 人员
+    out += "  \"people\": [";
+    for (size_t i = 0; i < people.size(); i++) {
+        const Person& p = people[i];
+        if (i) out += ",";
+        out += "\n    {\"name\": " + minijson::quote(wide_to_utf8(p.name));
+        out += ", \"en\": " + minijson::quote(wide_to_utf8(p.en));
+        out += ", \"sid\": " + minijson::quote(wide_to_utf8(p.sid));
+        out += ", \"groups\": [";
+        for (size_t j = 0; j < p.groups.size(); j++) {
+            if (j) out += ", ";
+            out += minijson::quote(wide_to_utf8(p.groups[j]));
+        }
+        out += "]}";
+    }
+    if (!people.empty()) out += "\n  ";
+    out += "],\n";
+    // 抽取记录与防重复状态
+    out += "  \"noRepeat\": " + std::string(noRepeat ? "true" : "false") + ",\n";
+    out += "  \"history\": [";
+    for (size_t i = 0; i < history.size(); i++) {
+        if (i) out += ", ";
+        out += minijson::quote(wide_to_utf8(history[i]));
+    }
+    out += "]\n}\n";
+
+    if (!writeFileBytes(path, out)) {
+        msg = L"工作区保存失败：" + utf8_to_wide(path);
+        return false;
+    }
+    msg = L"已保存工作区 " + std::to_wstring(people.size()) + L" 人 / " +
+          std::to_wstring(allGs.size()) + L" 组织：" + utf8_to_wide(path);
+    return true;
+}
+
+bool Roster::loadWorkspace(const std::string& path, std::wstring& msg) {
+    std::string data = readFileBytes(path);
+    if (data.empty()) { msg = L"工作区读取失败或为空"; return false; }
+    minijson::Parser pj(data);
+    minijson::Val root;
+    if (!pj.parse(root) || root.type != minijson::Val::OBJ) {
+        msg = L"工作区 JSON 格式错误"; return false;
+    }
+    const minijson::Val* fmt = root.get("format");
+    if (!fmt || fmt->str != "random-picker-workspace") {
+        msg = L"不是随机抽人的工作区文件"; return false;
+    }
+    // 组织集合
+    std::vector<std::wstring> newGroups;
+    if (const minijson::Val* gv = root.get("groups")) {
+        if (gv->type == minijson::Val::ARR)
+            for (const minijson::Val& g : gv->arr)
+                if (g.type == minijson::Val::STR) newGroups.push_back(utf8_to_wide(g.str));
+    }
+    // 人员
+    std::vector<Person> newPeople;
+    if (const minijson::Val* pv = root.get("people")) {
+        if (pv->type == minijson::Val::ARR) {
+            for (const minijson::Val& item : pv->arr) {
+                if (item.type != minijson::Val::OBJ) continue;
+                Person np;
+                if (const minijson::Val* v = item.get("name")) np.name = utf8_to_wide(v->str);
+                if (trim(np.name).empty()) continue;
+                if (const minijson::Val* v = item.get("en")) np.en = utf8_to_wide(v->str);
+                if (const minijson::Val* v = item.get("sid")) np.sid = utf8_to_wide(v->str);
+                if (const minijson::Val* gvs = item.get("groups")) {
+                    if (gvs->type == minijson::Val::ARR)
+                        for (const minijson::Val& g : gvs->arr)
+                            if (g.type == minijson::Val::STR) np.groups.push_back(utf8_to_wide(g.str));
+                } else if (const minijson::Val* v = item.get("group")) {
+                    np.group = utf8_to_wide(v->str);  // 兼容旧格式
+                }
+                np.normalize();
+                newPeople.push_back(np);
+            }
+        }
+    }
+    if (newPeople.empty() && newGroups.empty()) { msg = L"工作区里没有有效数据"; return false; }
+    // 原子替换：全部解析成功才覆盖内存
+    people = newPeople;
+    groups = newGroups;
+    drawn.clear();
+    history.clear();
+    noRepeat = false;
+    if (const minijson::Val* v = root.get("noRepeat")) noRepeat = (v->type == minijson::Val::BOOL) ? v->boolean : (v->num != 0);
+    if (const minijson::Val* hv = root.get("history")) {
+        if (hv->type == minijson::Val::ARR)
+            for (const minijson::Val& h : hv->arr)
+                if (h.type == minijson::Val::STR) history.push_back(utf8_to_wide(h.str));
+    }
+    msg = L"已加载工作区 " + std::to_wstring(people.size()) + L" 人 / " +
+          std::to_wstring(groups.size()) + L" 组织：" + utf8_to_wide(path);
     return true;
 }
