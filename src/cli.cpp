@@ -1,6 +1,7 @@
 // 命令行版：无 GUI 环境可用，也用于 CI/本机回归验证解析与随机逻辑
 #include <iostream>
 #include <string>
+#include <cstring>
 
 #include "roster.h"
 
@@ -13,24 +14,39 @@ static void help() {
               << "  picker_cli pickgroup [--file 文件]          随机抽一个组\n"
               << "  picker_cli initgroups <组数> [--file 文件]  一键初始化 n 个组\n"
               << "  picker_cli rename <旧组名> <新组名> [--file 文件]\n"
-              << "  v2.2 人员组织管理 / 工作区：\n"
-              << "  picker_cli workspace <路径> [--save|--load]   保存/加载 JSON 工作区\n"
-              << "  picker_cli join <人序号> <组织> [--file 文件] 给人加组织(多对多)\n"
-              << "  picker_cli leave <人序号> <组织> [--file 文件] 给人退出组织\n"
-              << "  picker_cli orgs [--file 文件]                 列出人-组织关系\n"
-              << "  v2.3 组织增删 / 拖动排序：\n"
-              << "  picker_cli addorg <组织名> --file 文件          新建空组织\n"
-              << "  picker_cli delorg <组织名> --file 文件          删除组织(成员同步退出)\n"
-              << "  picker_cli movep <从> <到> [--file 文件]      移动人员顺序(1-based)\n"
-              << "  picker_cli moveo <从> <到> [--file 文件]      移动组织顺序(1-based)\n"
-              << "  默认文件：people.csv\n";
+              << "  v2.4 单一工作区（CSV/JSON 已合并，默认存 testenv/workspace.json）：\n"
+              << "  picker_cli workspace --load                 读取默认工作区\n"
+              << "  picker_cli workspace --save                 写回默认工作区\n"
+              << "  picker_cli workspace <路径>.json --save|--load   读写指定工作区\n"
+              << "  picker_cli import <名单.csv/xlsx>            导入名单（自动写入默认工作区）\n"
+              << "  picker_cli list / pick / pickn / pickgroup  读默认工作区\n"
+              << "  picker_cli join <人序号> <组织>              加组织（多对多）\n"
+              << "  picker_cli leave <人序号> <组织>             退出组织\n"
+              << "  picker_cli orgs                             列出人-组织关系\n"
+              << "  picker_cli addorg <组织名> / delorg <组织名> 新建/删除组织\n"
+              << "  picker_cli movep <从> <到> / moveo <从> <到> 拖动排序(1-based)\n"
+              << "  默认存储：testenv/workspace.json（含真实名单，已 gitignore）；\n"
+              << "  CSV/xlsx 仅作导入来源与导出目标，不再双文件存储。\n";
 }
 
-// 从 --file 取名单路径，缺省 people.csv
+// 唯一默认存储：testenv/workspace.json（含真实名单，已 gitignore）
+// CSV 只是可选的「导入/导出」交换格式，不再承担持久化职责。
+static const char* kDefaultStore = "testenv/workspace.json";
+static const wchar_t* kDefaultStoreW = L"testenv/workspace.json";
+
+// 从 --file 取名单/工作区路径，缺省 testenv/workspace.json
 static std::string fileArg(int argc, char** argv) {
     for (int i = 2; i < argc - 1; i++)
         if (std::string(argv[i]) == "--file") return argv[i + 1];
-    return "people.csv";
+    return kDefaultStore;
+}
+
+// 工作区路径：--file 若指向 .json 则原样；否则落到 testenv/workspace.json。
+// 这样「--file 名单.csv」表示从 CSV 导入进同一个工作区，不再生成同名 .json。
+static bool isJsonPath(const std::string& p);
+static std::string storePath(const std::string& arg) {
+    if (isJsonPath(arg)) return arg;
+    return kDefaultStore;
 }
 
 static bool isJsonPath(const std::string& p) {
@@ -39,29 +55,39 @@ static bool isJsonPath(const std::string& p) {
     return l.size() >= 5 && l.substr(l.size() - 5) == ".json";
 }
 
-// 通用加载：显式 .json 路径按工作区读，其余按 CSV 读（不改变旧命令行为）
+// 通用加载：.json 按工作区读；其余（CSV/xlsx）导入后写回默认工作区，
+// 保证后续所有操作都在同一份数据上。
 static bool load(Roster& r, int argc, char** argv, std::wstring& msg) {
     std::string src = fileArg(argc, argv);
     if (isJsonPath(src)) return r.loadWorkspace(src, msg);
-    return r.importFile(src, false, msg);
+    if (!r.importFile(src, false, msg)) return false;
+    std::wstring wmsg;
+    bool ok = r.saveWorkspace(kDefaultStore, wmsg);
+    msg += ok ? (L" · 已写入工作区 " + std::wstring(kDefaultStoreW))
+              : (L" · 警告：" + wmsg);
+    return true;
 }
 
-// v2.2：人员管理命令的工作存储。优先读同名 .json 工作区（保留多对多），
-// 没有则从 CSV 新建。这样 join/leave 多次调用之间不会丢组织关系。
-static std::string workspaceFor(const std::string& csvPath) {
-    size_t dot = csvPath.find_last_of('.');
-    return (dot == std::string::npos ? csvPath : csvPath.substr(0, dot)) + ".json";
+// 人员管理命令统一读写默认工作区（testenv/workspace.json）。
+static std::string storeFor(int argc, char** argv) {
+    return storePath(fileArg(argc, argv));
 }
 static bool loadStore(Roster& r, int argc, char** argv, std::wstring& msg) {
     std::string src = fileArg(argc, argv);
     if (isJsonPath(src)) return r.loadWorkspace(src, msg);
-    std::string ws = workspaceFor(src);
-    FILE* f = fopen(ws.c_str(), "rb");
+    // 工作区已存在 → 直接读工作区（多对多无损）
+    FILE* f = fopen(kDefaultStore, "rb");
     if (f) {
         fclose(f);
-        return r.loadWorkspace(ws, msg);
+        return r.loadWorkspace(kDefaultStore, msg);
     }
-    return r.importFile(src, false, msg);
+    // 否则从 CSV 导入并落盘，之后所有命令共享这一份
+    if (!r.importFile(src, false, msg)) return false;
+    std::wstring wmsg;
+    bool ok = r.saveWorkspace(kDefaultStore, wmsg);
+    msg += ok ? (L" · 已写入工作区 " + std::wstring(kDefaultStoreW))
+              : (L" · 警告：" + wmsg);
+    return true;
 }
 
 int main(int argc, char** argv) {
@@ -80,6 +106,17 @@ int main(int argc, char** argv) {
         bool ok = r.importFile(argv[2], append, msg);
         std::cout << (ok ? "OK  " : "FAIL ") << wide_to_utf8(msg) << "\n";
         if (!ok) return 1;
+        // v2.4：导入即落盘到工作区。
+        //  --file 指向 .json → 写到该工作区；否则写默认 testenv/workspace.json。
+        std::string target = kDefaultStore;
+        for (int i = 3; i < argc - 1; i++)
+            if (std::string(argv[i]) == "--file") {
+                std::string t = argv[i + 1];
+                if (isJsonPath(t)) target = t;
+            }
+        std::wstring wmsg;
+        if (r.saveWorkspace(target, wmsg))
+            std::cout << "WS  已写入工作区 " << target << "\n";
         std::cout << "--- 名单 ---\n";
         for (size_t i = 0; i < r.people.size(); i++)
             std::cout << i + 1 << ". " << wide_to_utf8(displayName(r.people[i])) << " ["
@@ -221,41 +258,40 @@ int main(int argc, char** argv) {
         std::cout << (ok ? "OK  " : "FAIL ") << wide_to_utf8(msg) << "\n";
         for (auto& g : r.groupList()) std::cout << "  " << wide_to_utf8(g) << "\n";
         if (ok) {
-            std::string src = fileArg(argc, argv);
-            std::string lower = src;
-            for (char& c : lower) c = (char)tolower((unsigned char)c);
-            std::string target = (lower.size() >= 5 && lower.substr(lower.size()-5) == ".json")
-                                 ? src : workspaceFor(src);
             std::wstring wmsg;
-            if (r.saveWorkspace(target, wmsg)) std::cout << "WS  " << wide_to_utf8(wmsg) << "\n";
+            if (r.saveWorkspace(storeFor(argc, argv), wmsg)) std::cout << "WS  " << wide_to_utf8(wmsg) << "\n";
         }
         return ok ? 0 : 1;
     }
 
-    // v2.2：JSON 工作区保存/加载
-    if (cmd == "workspace" && argc >= 3) {
+    // v2.4：工作区统一在 testenv/workspace.json。
+    //   workspace --load                读默认工作区
+    //   workspace --save               从当前内存状态写入默认工作区
+    //   workspace <路径>.json          读写指定工作区（备份/多套名单用）
+    if (cmd == "workspace") {
         std::string mode = "save";
-        for (int i = 3; i < argc; i++)
+        for (int i = 2; i < argc; i++)
             if (std::string(argv[i]) == "--load") mode = "load";
         std::wstring msg;
         bool ok;
-        if (mode == "load") {
-            ok = r.loadWorkspace(argv[2], msg);
-        } else {
-            // --save：从 --file 读名单（若有）再写工作区
-            std::string src;
-            for (int i = 3; i < argc - 1; i++)
-                if (std::string(argv[i]) == "--file") src = argv[i + 1];
-            if (!src.empty()) {
-                if (!r.loadWorkspace(src, msg)) {  // v2.2：源必须是工作区（多对多无损）
-                    std::cout << "FAIL " << wide_to_utf8(msg) << "\n";
-                    return 1;
-                }
+        if (argc >= 3 && isJsonPath(argv[2])) {
+            if (mode == "load") {
+                ok = r.loadWorkspace(argv[2], msg);
+            } else {
+                // 另存为：先读源工作区（--file 指向 .json 则用它，否则默认工作区）
+                // 进内存，再写到目标路径。这样 fresh 进程里也能拿到完整数据。
+                std::string srcArg = fileArg(argc, argv);
+                std::wstring lmsg;
+                if (isJsonPath(srcArg)) (void)r.loadWorkspace(srcArg, lmsg);
+                else (void)r.loadWorkspace(kDefaultStore, lmsg);
+                ok = r.saveWorkspace(argv[2], msg);
             }
-            ok = r.saveWorkspace(argv[2], msg);
+        } else {
+            ok = (mode == "load") ? r.loadWorkspace(kDefaultStore, msg)
+                                  : r.saveWorkspace(kDefaultStore, msg);
         }
         std::cout << (ok ? "OK  " : "FAIL ") << wide_to_utf8(msg) << "\n";
-        if (ok && mode == "load") {
+        if (ok) {
             for (size_t i = 0; i < r.people.size(); i++)
                 std::cout << i + 1 << ". " << wide_to_utf8(displayName(r.people[i]))
                           << " [" << wide_to_utf8(groupsText(r.people[i])) << "]\n";
@@ -278,7 +314,7 @@ int main(int argc, char** argv) {
             std::cout << wide_to_utf8(displayName(r.people[idx])) << " 现属 ["
                       << wide_to_utf8(groupsText(r.people[idx])) << "]\n";
             std::wstring wmsg;
-            if (r.saveWorkspace(workspaceFor(fileArg(argc, argv)), wmsg))
+            if (r.saveWorkspace(storeFor(argc, argv), wmsg))
                 std::cout << "WS  " << wide_to_utf8(wmsg) << "\n";
         }
         return ok ? 0 : 1;
@@ -298,7 +334,7 @@ int main(int argc, char** argv) {
         std::cout << (ok ? "OK  " : "FAIL ") << wide_to_utf8(msg) << "\n";
         if (ok) {
             std::wstring wmsg;
-            if (r.saveWorkspace(workspaceFor(fileArg(argc, argv)), wmsg))
+            if (r.saveWorkspace(storeFor(argc, argv), wmsg))
                 std::cout << "WS  " << wide_to_utf8(wmsg) << "\n";
         }
         return ok ? 0 : 1;
@@ -317,7 +353,7 @@ int main(int argc, char** argv) {
         std::cout << (ok ? "OK  " : "FAIL ") << wide_to_utf8(msg) << "\n";
         if (ok) {
             std::wstring wmsg;
-            if (r.saveWorkspace(workspaceFor(fileArg(argc, argv)), wmsg))
+            if (r.saveWorkspace(storeFor(argc, argv), wmsg))
                 std::cout << "WS  " << wide_to_utf8(wmsg) << "\n";
         }
         return ok ? 0 : 1;

@@ -1,5 +1,7 @@
 #!/bin/bash
 # Random Picker v2.2 回归：人员组织多对多 + JSON 工作区持久化
+# v2.4：CSV/JSON 已合并，统一存 testenv/workspace.json。
+# 本测试用独立 JSON 工作区（--file 指向 .json 时原样读写），互不覆盖。
 # 用法：./tools/regress_v22.sh
 cd "$(dirname "$0")/.."
 CLI=./picker_cli
@@ -30,25 +32,28 @@ chk_contains() {
 TMP=$(mktemp -d)
 F="$TMP/roster.csv"
 printf '\xEF\xBB\xBF姓名,组别,学号\n张三,一组,001\n李四,二组,002\n王五,,003\n' > "$F"
+# v2.4：独立工作区，导入落盘到该 JSON，后续命令读写同一份
+WS="$TMP/ws.json"
+chk "导入落盘到独立工作区" ok $CLI import "$F" --file "$WS"
 
 echo "[1] 多对多加入"
-chk "张三加入二组" ok $CLI join 1 二组 --file "$F"
-chk "张三再加入班委" ok $CLI join 1 班委 --file "$F"
+chk "张三加入二组" ok $CLI join 1 二组 --file "$WS"
+chk "张三再加入班委" ok $CLI join 1 班委 --file "$WS"
 echo "[2] 持久化跨调用保留"
-chk_contains "张三属于 一组·二组·班委" "一组 · 二组 · 班委" $CLI orgs --file "$F"
-chk_contains "二组计数=2（张三+李四）" "二组: 2" $CLI orgs --file "$F"
-chk_contains "班委计数=1" "班委: 1" $CLI orgs --file "$F"
+chk_contains "张三属于 一组·二组·班委" "一组 · 二组 · 班委" $CLI orgs --file "$WS"
+chk_contains "二组计数=2（张三+李四）" "二组: 2" $CLI orgs --file "$WS"
+chk_contains "班委计数=1" "班委: 1" $CLI orgs --file "$WS"
 echo "[3] 多组织成员在多个组都能被抽到"
-chk "按二组抽 2 人（含张三）" ok $CLI pickn 2 --file "${F%.csv}.json" --group 二组
+chk "按二组抽 2 人（含张三）" ok $CLI pickn 2 --file "$WS" --group 二组
 echo "[4] 退出组织"
-chk "张三退出二组" ok $CLI leave 1 二组 --file "$F"
-chk_contains "退出后已无二组归属(张三剩一组·班委)" "一组 · 班委" $CLI orgs --file "$F"
+chk "张三退出二组" ok $CLI leave 1 二组 --file "$WS"
+chk_contains "退出后已无二组归属(张三剩一组·班委)" "一组 · 班委" $CLI orgs --file "$WS"
 echo "[5] 改组织名同步多组织成员"
-chk "张三加入文体委员" ok $CLI join 1 文体委员 --file "$F"
-chk "班委→班委会" ok $CLI rename 班委 班委会 --file "${F%.csv}.json"
-chk_contains "张三：一组·班委会·文体委员" "一组 · 班委会 · 文体委员" $CLI orgs --file "$F"
+chk "张三加入文体委员" ok $CLI join 1 文体委员 --file "$WS"
+chk "班委→班委会" ok $CLI rename 班委 班委会 --file "$WS"
+chk_contains "张三：一组·班委会·文体委员" "一组 · 班委会 · 文体委员" $CLI orgs --file "$WS"
 echo "[6] 工作区 save→load round-trip"
-chk "另存工作区" ok $CLI workspace "$TMP/saved.json" --file "${F%.csv}.json"
+chk "另存工作区" ok $CLI workspace "$TMP/saved.json" --save --file "$WS"
 chk_contains "重载后多对多完整" "一组 · 班委会 · 文体委员" $CLI workspace "$TMP/saved.json" --load
 echo "[7] 旧 CSV 导入仍单组织"
 G="$TMP/legacy.csv"

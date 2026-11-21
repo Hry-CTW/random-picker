@@ -1407,6 +1407,23 @@ static std::wstring scopeName() {
     return L"全班";
 }
 
+// 把当前页签（g_scope）翻译成组织名；-1 = 全班。用于统一过滤判定。
+static std::wstring scopeGroupName() {
+    if (g_scope < 0) return L"";
+    auto gs = g_roster.groupList();
+    if (g_scope < (int)gs.size()) return gs[g_scope];
+    return L"";
+}
+
+// 某人是否属于当前页签范围：用多对多 inGroup，而不是只看主组。
+// 修复 v2.4「改组后左栏名单不显示该人」—— 之前 p.group 只认主组，
+// 一旦把人通过「加组织」放进别的组，左栏就找不到他。
+static bool personInScope(const Person& p) {
+    std::wstring g = scopeGroupName();
+    if (g.empty()) return true;                      // 全班
+    return p.inGroup(g);   // Person::inGroup 内部已按多对多 groups 判定
+}
+
 static void doImport(HWND hwnd) {
     std::wstring path;
     if (!openFileDlg(hwnd, path, false)) return;
@@ -1680,7 +1697,7 @@ static void doToggleTheme(HWND hwnd) {
 
 static void doHelp(HWND hwnd) {
     std::wstring s =
-        L"班级随机抽人工具  v2.2\n"
+        L"班级随机抽人工具  v2.4\n"
         L"----------------------------\n"
         L"最常用的三件事：\n"
         L"  抽 1 人   右上角大按钮 / 空格\n"
@@ -1696,7 +1713,7 @@ static void doHelp(HWND hwnd) {
         L"  T         切换外观（极客深色 / ins 浅色）\n"
         L"  A         添加成员\n"
         L"  M         把选中的人移到别的组（单组快捷操作）\n"
-        L"  P         人员管理（多对多组织关系 + JSON 工作区持久化）\n"
+        L"  P         人员管理（多对多组织关系 + 工作区持久化）\n"
         L"  F2        给当前组改名（双击组名也可以）\n"
         L"  Del       删除选中的人（会先问一次，删错可 Ctrl+Z 撤销）\n"
         L"  Ctrl+Z    撤销上一次删除\n"
@@ -1711,10 +1728,14 @@ static void doHelp(HWND hwnd) {
         L"  一个人可同时属于多个组织（多对多），比如既在「一组」又在「班委」\n"
         L"  左栏「＋ 加人」/ 右栏「＋ 加组织」快速新建；点人 → 右栏勾选组织（可多选）\n"
         L"  拖动左栏的人 / 右栏的组织可调整顺序；鼠标滚轮分别翻两栏\n"
-        L"  快捷键：Ctrl+S 存工作区 · Del 删选中人 · ↑↓ 移动选中 · Esc 完成\n"
-        L"  「保存工作区」存 .json（完整保留多对多），下次「加载工作区」原样恢复\n"
-        L"  · 注意：同一个人若在多个组织里，按不同组织抽签都可能被抽到（范围重叠）\n"
-        L"  · CSV 仍可读可存，但 CSV 只记一个主组；多组织请用 .json 工作区\n\n"
+        L"  快捷键：Ctrl+S 存工作区 · Del 删选中人 · ↑↓ 移动选中 · Esc 完成\n\n"
+        L"v2.4 单一工作区（CSV 与组织关系已合并）：\n"
+        L"  名单、组织、多对多关系、组序、历史都存到同一份工作区：\n"
+        L"  exe 同目录的 testenv/workspace.json（含真实名单，已 gitignore，不入仓）\n"
+        L"  启动自动加载；Ctrl+O 导入 csv/xlsx 后自动写入该工作区\n"
+        L"  人员管理里的「保存/加载工作区」可选任意 .json 作备份或多套名单\n"
+        L"  · CSV/xlsx 仅作导入来源与导出目标，不再单独存一份同名 json\n"
+        L"  · 真实名单数据请只放 testenv/，永远不要提交到仓库\n\n"
         L"名单格式（推荐 csv，UTF-8）：\n"
         L"  姓名,组别,学号\n"
         L"  张三,一组,20260101\n"
@@ -1815,8 +1836,7 @@ static void paint(HWND hwnd) {
         const Person& p = g_roster.people[idx];
         RECT r{g_listRect.left, top + k * rowH, g_listRect.right, top + (k + 1) * rowH};
         bool drawnFlag = g_roster.drawn.count(p.name) > 0;
-        bool inScope = g_scope < 0 || (g_scope < (int)gs.size() &&
-                                       (p.group.empty() ? L"未分组" : p.group) == gs[g_scope]);
+        bool inScope = personInScope(p);   // v2.4：多对多过滤，改组后左栏也能看到
         if (idx == g_sel) {
             fillRect(dc, r, g_p.sel);
             frameRect(dc, r, g_p.accent2);
@@ -2189,19 +2209,38 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nShow) {
     loadLogo(hInst);
-    // v2.2：启动时若 exe 同目录有 workspace.json，自动加载（多对多持久化开箱即用）
+    // v2.4：默认工作区统一在 exe 同目录的 testenv/workspace.json（含真实名单，gitignore）。
+    // 若该文件不存在，但同目录存在 v2.2/v2.3 的旧版 workspace.json，自动迁移过来。
     {
         wchar_t exePath[MAX_PATH] = {0};
         GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-        std::wstring ws = exePath;
-        size_t slash = ws.find_last_of(L"\\/");
-        ws = (slash == std::wstring::npos ? std::wstring() : ws.substr(0, slash + 1)) + L"workspace.json";
+        std::wstring dir = exePath;
+        size_t slash = dir.find_last_of(L"\\/");
+        dir = (slash == std::wstring::npos ? std::wstring() : dir.substr(0, slash + 1));
+
+        std::wstring ws = dir + L"testenv/workspace.json";
         FILE* f = _wfopen(ws.c_str(), L"rb");
         if (f) {
             fclose(f);
+        } else {
+            std::wstring legacy = dir + L"workspace.json";
+            FILE* g = _wfopen(legacy.c_str(), L"rb");
+            if (g) {
+                fclose(g);
+                if (MoveFileExW(legacy.c_str(), ws.c_str(),
+                                MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
+                    // 已迁移到 testenv/workspace.json，ws 保持默认路径
+                } else {
+                    ws = legacy;  // 迁移失败则回退读旧文件，保持兼容
+                }
+            }
+        }
+        FILE* chk = _wfopen(ws.c_str(), L"rb");
+        if (chk) {
+            fclose(chk);
             std::wstring msg;
             if (g_roster.loadWorkspace(wide_to_utf8(ws), msg))
-                g_status = msg + L" · \u7a7a\u683c\u5f00\u62bd";  // 空格开抽
+                g_status = msg + L" · \u7a7a\u683c\u5f00\u62df";  // 空格开抽
         }
     }
     g_uiFace = pickUIFont();

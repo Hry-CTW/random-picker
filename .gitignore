@@ -1,6 +1,16 @@
-# ── 含真实学生姓名的数据，一律不得提交 ──
+# ── 测试环境目录：一切运行时数据都不入库（含真实学生姓名/学号/日志）──
+testenv/*
+!testenv/README.md
+!testenv/.gitignore
+
+# 仓库内任何位置都不允许出现名单类数据或运行日志
 名单.csv
+名单.xlsx
+名单.txt
 Students.txt
+*.xlsx
+*.log
+status.log
 roster.json
 history.txt
 *名单_真实*

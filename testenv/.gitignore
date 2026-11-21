@@ -1,0 +1,5 @@
+# 目录内一切数据文件，只保留说明与本文件
+*
+!.gitignore
+!.gitkeep
+!README.md

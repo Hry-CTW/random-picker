@@ -1,5 +1,8 @@
 #!/bin/bash
 # Random Picker v2.3 回归：人员/组织拖动排序
+# v2.4：CSV/JSON 已合并，统一存 testenv/workspace.json。
+# 本测试用独立 JSON 作为工作区（--file 指向 .json 时原样读写），
+# 避免污染真实默认工作区。首个命令 import 该 CSV 落盘到该 JSON。
 # 用法：./tools/regress_v23.sh
 cd "$(dirname "$0")/.."
 CLI=./picker_cli
@@ -29,12 +32,14 @@ chk_contains() {
 TMP=$(mktemp -d)
 F="$TMP/roster.csv"
 printf '\xEF\xBB\xBF姓名,组别,学号\n张三,一组,001\n李四,二组,002\n王五,三组,003\n' > "$F"
-WS="${F%.csv}.json"
+# v2.4：独立工作区，--file 指向 .json 时 CLI 原样读写（隔离，不碰 testenv/workspace.json）
+WS="$TMP/ws.json"
 
-echo "[1] 人员顺序：初始 张三·李四·王五"
-chk_contains "初始顺序" "1. 张三" $CLI orgs --file "$F"
+echo "[1] 人员顺序：初始 张三·李四·王五（import 落盘到独立 JSON）"
+chk "import 落盘" ok $CLI import "$F" --file "$WS"
+chk_contains "初始顺序" "1. 张三" $CLI orgs --file "$WS"
 echo "[2] 拖动人员 3→1（王五移到最前）"
-chk "movep 3 1" ok $CLI movep 3 1 --file "$F"
+chk "movep 3 1" ok $CLI movep 3 1 --file "$WS"
 chk_contains "移动后第1位是王五" "1. 王五" $CLI orgs --file "$WS"
 chk_contains "第2位是张三" "2. 张三" $CLI orgs --file "$WS"
 echo "[3] 拖动人员 1→2（王五与张三交换回）"

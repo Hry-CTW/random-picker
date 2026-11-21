@@ -36,16 +36,19 @@ chk "组名不存在（要说出来）"   fail $CLI pickn 2 --file samples/peopl
 chk "组名不存在（pick 同样）"  fail $CLI pick 1 --file samples/people.csv --group 九组
 
 echo "[4] 一键 6 组与改组名"
-# 临时造一份「已经是 6 组」的名单：CLI 是单进程，跨用例的状态只能靠样本文件带过去
+# 临时造一份「已经是 6 组」的名单：CLI 是单进程，跨用例的状态只能靠工作区文件带过去
+# v2.4：统一工作区，--file 指向 .json 时原样读写（隔离，互不覆盖）
 TMP=$(mktemp -d)
 printf '\xEF\xBB\xBF姓名,组别,学号\n甲,第1组,1\n乙,第2组,2\n丙,第3组,3\n丁,第4组,4\n戊,第5组,5\n己,第6组,6\n庚,第1组,7\n辛,第2组,8\n' > "$TMP/g6.csv"
-chk "重排成 6 组（覆盖原分组）"  ok   $CLI initgroups 6 --file samples/people.csv --force
+G6="$TMP/g6.json"
+chk "导入 g6 到独立工作区"       ok   $CLI import "$TMP/g6.csv" --file "$G6"
+chk "重排成 6 组（覆盖原分组）"  ok   $CLI initgroups 6 --file samples/people.csv
 chk "已经有 6 组再补（应跳过）"  fail $CLI initgroups 6 --file "$TMP/g6.csv"
 chk "补空组（3 组→6 组）"      ok   $CLI initgroups 6 --file samples/people.md
-chk "改名（第1组→阳光组）"      ok   $CLI rename 第1组 阳光组 --file "$TMP/g6.csv"
-chk "改名撞已有组名"            fail $CLI rename 第1组 第2组 --file "$TMP/g6.csv"
+chk "改名（第1组→阳光组）"      ok   $CLI rename 第1组 阳光组 --file "$G6"
+chk "改名撞已有组名"            fail $CLI rename 第1组 第2组 --file "$G6"
 chk "改名到不存在的组"          fail $CLI rename 第九组 阳光组 --file samples/people.md
-chk "改名后再按新组名抽 2 人"    ok   $CLI pickn 2 --file "$TMP/g6.csv" --group 第1组
+chk "改名后再按新组名抽 2 人"    ok   $CLI pickn 2 --file "$G6" --group 阳光组
 rm -rf "$TMP"
 
 echo "[5] 抽组与防重复"
