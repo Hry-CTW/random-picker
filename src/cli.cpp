@@ -18,6 +18,11 @@ static void help() {
               << "  picker_cli join <人序号> <组织> [--file 文件] 给人加组织(多对多)\n"
               << "  picker_cli leave <人序号> <组织> [--file 文件] 给人退出组织\n"
               << "  picker_cli orgs [--file 文件]                 列出人-组织关系\n"
+              << "  v2.3 组织增删 / 拖动排序：\n"
+              << "  picker_cli addorg <组织名> --file 文件          新建空组织\n"
+              << "  picker_cli delorg <组织名> --file 文件          删除组织(成员同步退出)\n"
+              << "  picker_cli movep <从> <到> [--file 文件]      移动人员顺序(1-based)\n"
+              << "  picker_cli moveo <从> <到> [--file 文件]      移动组织顺序(1-based)\n"
               << "  默认文件：people.csv\n";
 }
 
@@ -272,6 +277,45 @@ int main(int argc, char** argv) {
         if (ok) {
             std::cout << wide_to_utf8(displayName(r.people[idx])) << " 现属 ["
                       << wide_to_utf8(groupsText(r.people[idx])) << "]\n";
+            std::wstring wmsg;
+            if (r.saveWorkspace(workspaceFor(fileArg(argc, argv)), wmsg))
+                std::cout << "WS  " << wide_to_utf8(wmsg) << "\n";
+        }
+        return ok ? 0 : 1;
+    }
+
+    // v2.3：组织增删（与 GUI 加组织/删组织共用逻辑）
+    if ((cmd == "addorg" || cmd == "delorg") && argc >= 4) {
+        std::wstring msg;
+        if (!loadStore(r, argc, argv, msg)) {
+            std::cout << "FAIL " << wide_to_utf8(msg) << "\n";
+            return 1;
+        }
+        // argv[1]=命令 argv[2]=组织名
+        std::wstring gname = utf8_to_wide(argv[2]);
+        bool ok = (cmd == "addorg") ? r.addOrganization(gname, msg)
+                                    : r.removeOrganization(gname, msg);
+        std::cout << (ok ? "OK  " : "FAIL ") << wide_to_utf8(msg) << "\n";
+        if (ok) {
+            std::wstring wmsg;
+            if (r.saveWorkspace(workspaceFor(fileArg(argc, argv)), wmsg))
+                std::cout << "WS  " << wide_to_utf8(wmsg) << "\n";
+        }
+        return ok ? 0 : 1;
+    }
+
+    // v2.3：拖动排序（人 / 组织），供 GUI 共用逻辑的验收
+    if ((cmd == "movep" || cmd == "moveo") && argc >= 4) {
+        std::wstring msg;
+        if (!loadStore(r, argc, argv, msg)) {
+            std::cout << "FAIL " << wide_to_utf8(msg) << "\n";
+            return 1;
+        }
+        int from = atoi(argv[2]) - 1, to = atoi(argv[3]) - 1;  // 1-based
+        bool ok = (cmd == "movep") ? r.movePerson(from, to, msg)
+                                   : r.moveOrganization(from, to, msg);
+        std::cout << (ok ? "OK  " : "FAIL ") << wide_to_utf8(msg) << "\n";
+        if (ok) {
             std::wstring wmsg;
             if (r.saveWorkspace(workspaceFor(fileArg(argc, argv)), wmsg))
                 std::cout << "WS  " << wide_to_utf8(wmsg) << "\n";

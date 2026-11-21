@@ -73,6 +73,9 @@ public:
     bool removeOrganization(const std::wstring& g, std::wstring& msg);
     bool addPerson(const Person& p, std::wstring& msg);
     bool updatePerson(int idx, const Person& p, std::wstring& msg);
+    // v2.3 拖动排序：把 from 位置的元素移动到 to 位置（其余顺移）
+    bool movePerson(int from, int to, std::wstring& msg);
+    bool moveOrganization(int from, int to, std::wstring& msg);
 
     // v2.2 JSON 工作区持久化（多对多无损；沿用 C 文件 IO）
     bool saveWorkspace(const std::string& path, std::wstring& msg);

@@ -22,3 +22,6 @@ CMakeCache.txt
 Thumbs.db
 .vscode/
 .idea/
+
+# ── 运行时自证日志（含本机真实姓名，禁止入库）──
+status.log

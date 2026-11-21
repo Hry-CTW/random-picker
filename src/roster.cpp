@@ -883,16 +883,22 @@ bool Roster::addOrganization(const std::wstring& g, std::wstring& msg) {
 }
 
 bool Roster::removeOrganization(const std::wstring& g, std::wstring& msg) {
-    auto it = std::find(groups.begin(), groups.end(), g);
-    if (it != groups.end()) groups.erase(it);
+    // 注意：erase 后旧迭代器失效，不能用它判断“是否删掉过”，必须先记录结果
+    std::wstring want = normGroup(g);
+    auto it = std::find(groups.begin(), groups.end(), want);
+    bool inFixed = (it != groups.end());
+    if (inFixed) groups.erase(it);
     int removed = 0;
     for (Person& p : people) {
         auto before = p.groups.size();
         p.groups.erase(std::remove_if(p.groups.begin(), p.groups.end(),
-                        [&](const std::wstring& x) { return normGroup(x) == g; }), p.groups.end());
-        if (p.groups.size() != before) { p.normalize(); removed++; }
+                        [&](const std::wstring& x) { return normGroup(x) == want; }), p.groups.end());
+        const bool lost = p.groups.size() != before;
+        // 主组字段若指向被删组织必须清空，否则 normalize() 会把它重新塞回 groups，组织「复活」
+        if (normGroup(p.group) == want) p.group.clear();
+        if (lost) { p.normalize(); removed++; }
     }
-    if (it == groups.end() && removed == 0) { msg = L"没找到这个组织"; return false; }
+    if (!inFixed && removed == 0) { msg = L"没找到这个组织"; return false; }
     msg = L"已删除组织「" + g + L"」" + (removed ? (L"，" + std::to_wstring(removed) + L" 人退出") : L"");
     return true;
 }
@@ -921,6 +927,42 @@ bool Roster::updatePerson(int idx, const Person& p, std::wstring& msg) {
         if (std::find(groups.begin(), groups.end(), g) == groups.end())
             groups.push_back(g);
     msg = L"已更新：" + displayName(people[idx]);
+    return true;
+}
+
+bool Roster::movePerson(int from, int to, std::wstring& msg) {
+    int n = (int)people.size();
+    if (from < 0 || from >= n || to < 0 || to >= n) {
+        msg = L"拖动位置无效"; return false;
+    }
+    if (from == to) { msg = L"位置未变"; return false; }
+    // 先把当前组序固化到 groups：CSV 来源的工作区 groups 可能为空，
+    // 组序仅靠 people 顺序隐含。若不固化，移动人员会让组织顺序跟着乱跳。
+    groups = groupList();
+    Person p = people[from];
+    people.erase(people.begin() + from);
+    people.insert(people.begin() + to, p);
+    std::wstring nm = displayName(p);
+    msg = L"已移动：" + nm + L"（第 " + std::to_wstring(from + 1) +
+          L" → 第 " + std::to_wstring(to + 1) + L" 位）";
+    return true;
+}
+
+bool Roster::moveOrganization(int from, int to, std::wstring& msg) {
+    // 操作固定组序 groups；groupList 里若有来自人身上、不在 groups 的组，
+    // 先把它们固化进 groups，保证拖动后顺序稳定、可持久化。
+    std::vector<std::wstring> all = groupList();
+    groups = all;                       // 固化完整组序
+    int n = (int)groups.size();
+    if (from < 0 || from >= n || to < 0 || to >= n) {
+        msg = L"拖动位置无效"; return false;
+    }
+    if (from == to) { msg = L"位置未变"; return false; }
+    std::wstring g = groups[from];
+    groups.erase(groups.begin() + from);
+    groups.insert(groups.begin() + to, g);
+    msg = L"已调整组织顺序：「" + g + L"」（第 " + std::to_wstring(from + 1) +
+          L" → 第 " + std::to_wstring(to + 1) + L" 位）";
     return true;
 }
 
