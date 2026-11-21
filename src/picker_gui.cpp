@@ -220,6 +220,22 @@ static void clampTabScroll() {
     if (g_tabScroll > overflow) g_tabScroll = overflow;
 }
 
+// 把第 tabIdx 个页签（0=全班）滚进可视区。
+// 场景：用快捷键/双击切到远处某个组时，若不自动滚过去，用户看不到自己选中了哪个。
+// 只做最小必要滚动——已经在视野里就一动不动，避免每次切组页签条乱跳。
+static void ensureTabVisible(int tabIdx) {
+    if (tabIdx < 0 || tabIdx >= (int)g_tabRects.size()) return;
+    const RECT& r = g_tabRects[tabIdx];
+    const int viewL = g_tabBar.left, viewR = g_tabBar.right;
+    int left = r.left - g_tabScroll, right = r.right - g_tabScroll;
+    if (left < viewL) {
+        g_tabScroll = r.left - viewL;               // 左边被挡住 → 贴左边显示
+    } else if (right > viewR) {
+        g_tabScroll = r.right - viewR;              // 右边被挡住 → 贴右边显示
+    }
+    clampTabScroll();
+}
+
 static void computeLayout(HWND hwnd) {
     RECT cr;
     GetClientRect(hwnd, &cr);
@@ -269,6 +285,9 @@ static void computeLayout(HWND hwnd) {
     g_listRect = RECT{pad, listTop, leftW - pad, H - 26 - 8};
     // 页签滚动量按可视宽度收敛，避免组改名/删组后残留偏移
     clampTabScroll();
+    // 组改名后字变长、页签整体右移，原来可见的选中组可能被挤出视野 → 拉回来
+    // （+1 因为 g_tabRects[0] 是「全班」，g_scope=-1 对应索引 0）
+    ensureTabVisible(g_scope + 1);
 
     // 右栏
     int rx = leftW + 12;
@@ -2188,8 +2207,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             // v2.5：光标在组页签条上且页签溢出 → 横滑页签（否则会被名单滚动抢走）
             if (PtInRect(&g_tabBar, pt) && (g_tabMaxX - g_tabViewW) > 0) {
+                // 步进按可视宽度算（约 3/4 屏），不是固定 28px：
+                // 一个页签实测 65~72px，固定 28px 要滚 17 格才能从最左到最右，手感太黏
+                int step = (g_tabViewW * 3) / 4;
+                if (step < 40) step = 40;
                 int before = g_tabScroll;
-                g_tabScroll += (d > 0 ? -28 : 28);   // 一格约等于一个页签宽
+                g_tabScroll += (d > 0 ? -step : step);
                 clampTabScroll();
                 if (g_tabScroll != before) {
                     InvalidateRect(hwnd, nullptr, FALSE);
