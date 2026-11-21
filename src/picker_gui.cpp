@@ -137,6 +137,16 @@ struct Btn {
 static std::vector<Btn> g_buttons;    // 底部一排常规按钮
 static std::vector<Btn> g_big;        // 顶部主按钮（抽 1 人 / 抽 1 组 / 抽 N 人）
 static std::vector<RECT> g_tabRects;
+// v2.5：组页签改为单行横向滚动条（原来超宽会折行，把名单挤下去 + 组名被截）
+static int   g_tabRowH   = 30;   // 页签行高（含上下留白）
+static int   g_tabScroll = 0;    // 页签区已横向滚动的像素
+static int   g_tabMaxX   = 0;    // 全部页签铺开后的总宽度（不含左侧渐隐遮罩）
+static int   g_tabViewW  = 0;    // 页签区可视宽度
+static RECT  g_tabBar    = {0, 0, 0, 0};  // 页签条整体外框（含右端渐隐提示）
+static RECT  g_tabHot    = {0, 0, 0, 0};  // 页签条上的热区（用于滚轮改判方向）
+static int   g_tabDragX  = 0;    // v2.5：页签条拖拽起点客户区 x（0 = 未在拖拽）
+static int   g_tabDragScroll = 0;  // 拖拽起点的滚动量
+static bool  g_tabDragged = false;  // 拖拽中已发生位移 → 抬手时吞掉这次点击，避免误切组
 static RECT g_listRect, g_cardRect, g_histRect, g_nEditRect, g_nDropRect, g_themeRect;
 static HWND g_hEditN = nullptr;
 
@@ -202,6 +212,14 @@ static std::wstring pickUIFont() {
 }
 
 // ---------- 布局 ----------
+// 页签横向滚动量收敛：不超出 [0, 总宽 - 可视宽]，无溢出时归零
+static void clampTabScroll() {
+    int overflow = g_tabMaxX - g_tabViewW;
+    if (overflow <= 0) g_tabScroll = 0;
+    if (g_tabScroll < 0) g_tabScroll = 0;
+    if (g_tabScroll > overflow) g_tabScroll = overflow;
+}
+
 static void computeLayout(HWND hwnd) {
     RECT cr;
     GetClientRect(hwnd, &cr);
@@ -209,24 +227,48 @@ static void computeLayout(HWND hwnd) {
     int leftW = 320;
     int pad = 14;
 
-    // 左栏：组页签 + 名单
+    // 左栏：组页签（单行 + 横向滚动）+ 名单
     g_tabRects.clear();
-    int tx = pad, ty = 46 + pad, tabH = 28;
+    int tabY = 46 + pad;
+    g_tabBar = RECT{pad, tabY, leftW - pad, tabY + g_tabRowH};
+    g_tabHot = g_tabBar;
+
     std::vector<std::wstring> tabs{L"全班"};
     auto gs = g_roster.groupList();
     for (auto& g : gs) tabs.push_back(g);
+
+    // 用真实字宽量每个页签宽度：CJK 字符约占 fontSize*1.0~1.1，原来的 size*10 会严重偏窄，
+    // 导致 "G10 3" 这类标签被 DT_END_ELLIPSIS 截成 "G10 …"，这就是"组标显示不全"的根因。
+    HDC mdc = GetDC(hwnd);
+    HFONT oldF = nullptr;
+    if (mdc) oldF = (HFONT)SelectObject(mdc, g_fSmall ? g_fSmall : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
+    auto measure = [&](const std::wstring& s) -> int {
+        if (!mdc) return 26 + (int)s.size() * 10;   // 量不到就退回旧口径
+        SIZE sz{0, 0};
+        GetTextExtentPoint32W(mdc, s.c_str(), (int)s.size(), &sz);
+        return sz.cx;
+    };
+
+    int tx = pad, ty = tabY + 1, tabH = g_tabRowH - 4;
     for (size_t i = 0; i < tabs.size(); i++) {
-        int w = 26 + (int)tabs[i].size() * 10;
-        if (tx + w > leftW - pad && i > 0) {
-            tx = pad;
-            ty += tabH + 6;
-        }
-        RECT r{tx, ty, tx + w, ty + tabH};
-        g_tabRects.push_back(r);
+        int cnt = (i == 0) ? (int)g_roster.people.size() : g_roster.countInGroup(tabs[i - 1]);
+        std::wstring label = i == 0 ? L"全班" : tabs[i - 1];
+        label += L" " + std::to_wstring(cnt);
+        int w = measure(label) + 22;   // 文字宽 + 左右内边距
+        if (w < 46) w = 46;
+        g_tabRects.push_back(RECT{tx, ty, tx + w, ty + tabH});
         tx += w + 6;
     }
-    int listTop = ty + tabH + 10;
+    if (mdc && oldF) SelectObject(mdc, oldF);
+    if (mdc) ReleaseDC(hwnd, mdc);
+    g_tabMaxX = tx - 6;
+    g_tabViewW = g_tabBar.right - g_tabBar.left;
+
+    // 名单列表紧跟页签行（页签不再折行，列表高度恒定）
+    int listTop = tabY + g_tabRowH + 8;
     g_listRect = RECT{pad, listTop, leftW - pad, H - 26 - 8};
+    // 页签滚动量按可视宽度收敛，避免组改名/删组后残留偏移
+    clampTabScroll();
 
     // 右栏
     int rx = leftW + 12;
@@ -289,6 +331,14 @@ static void computeLayout(HWND hwnd) {
 }
 
 // ---------- 绘制工具 ----------
+// 两个 COLORREF 按 t(0~255) 线性插值，用来画"伪渐变"遮罩而不引额外 GDI 开销
+static COLORREF BlendColor(COLORREF a, COLORREF b, BYTE t) {
+    int r = (GetRValue(a) * (255 - t) + GetRValue(b) * t) / 255;
+    int g = (GetGValue(a) * (255 - t) + GetGValue(b) * t) / 255;
+    int bl = (GetBValue(a) * (255 - t) + GetBValue(b) * t) / 255;
+    return RGB(r, g, bl);
+}
+
 static void fillRect(HDC dc, RECT r, COLORREF c) {
     HBRUSH b = CreateSolidBrush(c);
     FillRect(dc, &r, b);
@@ -1439,6 +1489,7 @@ static void doImport(HWND hwnd) {
         g_scope = -1;
         g_sel = -1;
         g_scroll = 0;
+        g_tabScroll = 0;   // v2.5：名单换了，组也全变了，页签滚动归零
         g_status = msg + L" · 按空格开抽";
     } else {
         g_status = L"导入失败：" + msg;
@@ -1697,7 +1748,7 @@ static void doToggleTheme(HWND hwnd) {
 
 static void doHelp(HWND hwnd) {
     std::wstring s =
-        L"班级随机抽人工具  v2.4\n"
+        L"班级随机抽人工具  v2.5\n"
         L"----------------------------\n"
         L"最常用的三件事：\n"
         L"  抽 1 人   右上角大按钮 / 空格\n"
@@ -1729,6 +1780,10 @@ static void doHelp(HWND hwnd) {
         L"  左栏「＋ 加人」/ 右栏「＋ 加组织」快速新建；点人 → 右栏勾选组织（可多选）\n"
         L"  拖动左栏的人 / 右栏的组织可调整顺序；鼠标滚轮分别翻两栏\n"
         L"  快捷键：Ctrl+S 存工作区 · Del 删选中人 · ↑↓ 移动选中 · Esc 完成\n\n"
+        L"v2.5 组页签横滑（解决组标显示不全）：\n"
+        L"  左栏组名页签改为单行排列、按真实字宽自适应，不再折行\n"
+        L"  组太多放不下时：在页签条上按住左右拖动，或把鼠标停在页签条上滚滚轮\n"
+        L"  页签条右端出现 › 渐隐提示 + 下方细滚动条，表示右边还有组\n\n"
         L"v2.4 单一工作区（CSV 与组织关系已合并）：\n"
         L"  名单、组织、多对多关系、组序、历史都存到同一份工作区：\n"
         L"  exe 同目录的 testenv/workspace.json（含真实名单，已 gitignore，不入仓）\n"
@@ -1811,14 +1866,58 @@ static void paint(HWND hwnd) {
     frameRect(dc, left, g_p.border);
 
     auto gs = g_roster.groupList();
-    for (size_t i = 0; i < g_tabRects.size(); i++) {
-        bool active = ((int)i - 1 == g_scope) || (i == 0 && g_scope == -1);
-        RECT r = g_tabRects[i];
-        roundRect(dc, r, g_p.radius, active ? g_p.sel : g_p.panel2, active ? g_p.accent : g_p.border);
-        std::wstring label = i == 0 ? L"全班" : gs[i - 1];
-        int cnt = (i == 0) ? (int)g_roster.people.size() : g_roster.countInGroup(gs[i - 1]);
-        label += L" " + std::to_wstring(cnt);
-        text(dc, label, r, active ? g_p.accent : g_p.dim, g_fSmall, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    // v2.5：页签单行横向滚动绘制。整体画在页签条内，右端用渐隐提示"右边还有"
+    {
+        RECT bar = g_tabBar;
+        fillRect(dc, bar, g_p.panel2);
+        frameRect(dc, bar, g_p.border);
+        // 裁剪住页签条，滚动出去的页签不画到名单区上
+        HRGN clip = CreateRectRgn(bar.left, bar.top, bar.right, bar.bottom);
+        SelectClipRgn(dc, clip);
+        for (size_t i = 0; i < g_tabRects.size(); i++) {
+            RECT r = g_tabRects[i];
+            OffsetRect(&r, -g_tabScroll, 0);
+            // 完全滚出可视区的页签跳过（省绘制，也避免半截页签压边）
+            if (r.right < bar.left || r.left > bar.right) continue;
+            bool active = ((int)i - 1 == g_scope) || (i == 0 && g_scope == -1);
+            roundRect(dc, r, g_p.radius, active ? g_p.sel : g_p.panel2,
+                      active ? g_p.accent : g_p.border);
+            std::wstring label = i == 0 ? L"全班" : gs[i - 1];
+            int cnt = (i == 0) ? (int)g_roster.people.size() : g_roster.countInGroup(gs[i - 1]);
+            label += L" " + std::to_wstring(cnt);
+            text(dc, label, r, active ? g_p.accent : g_p.dim, g_fSmall, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+        SelectClipRgn(dc, nullptr);
+        DeleteObject(clip);
+
+        // 右端渐隐遮罩：仅当确实还有未看见的页签时画，提示可横滑
+        int overflow = g_tabMaxX - g_tabViewW;
+        if (overflow > 0 && g_tabScroll < overflow) {
+            // 从左（panel2 本色）向右（panel 深色）手工插值，不引额外 GDI 开销
+            static const int kSteps = 6;
+            for (int s = 0; s < kSteps; s++) {
+                int x0 = g_tabBar.right - 1 - (22 * (kSteps - s) / kSteps);
+                int x1 = g_tabBar.right - 1 - (22 * (kSteps - s - 1) / kSteps);
+                BYTE t = (BYTE)(255 * s / (kSteps - 1));   // 0=本色 → 255=底色
+                COLORREF c = BlendColor(g_p.panel2, g_p.panel, t);
+                fillRect(dc, RECT{x0, g_tabBar.top + 1, x1, g_tabBar.bottom - 1}, c);
+            }
+            RECT fade{g_tabBar.right - 22, g_tabBar.top + 1, g_tabBar.right - 1, g_tabBar.bottom - 1};
+            text(dc, L"\u203a", fade, g_p.dim, g_fBody, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+        // 滚动条细线（页签总宽超可视宽时）
+        if (overflow > 0) {
+            int trackY = g_tabBar.bottom - 3;
+            RECT track{g_tabBar.left + 2, trackY, g_tabBar.right - 2, trackY + 2};
+            fillRect(dc, track, g_p.border);
+            int trackW = track.right - track.left;
+            int thumbW = (int)((long long)trackW * g_tabViewW / (g_tabMaxX > 0 ? g_tabMaxX : 1));
+            if (thumbW < 16) thumbW = 16;
+            int thumbX = track.left +
+                         (int)((long long)(trackW - thumbW) * g_tabScroll / (overflow > 0 ? overflow : 1));
+            RECT thumb{thumbX, trackY, thumbX + thumbW, trackY + 2};
+            fillRect(dc, thumb, g_p.dim);
+        }
     }
 
     // 名单列表
@@ -2006,6 +2105,7 @@ static Hit hitTest(int x, int y) {
         if (x >= b.r.left && x <= b.r.right && y >= b.r.top && y <= b.r.bottom) h.btn = b.id;
     for (size_t i = 0; i < g_tabRects.size(); i++) {
         RECT r = g_tabRects[i];
+        OffsetRect(&r, -g_tabScroll, 0);   // 与绘制同步：页签已随滚动平移
         if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) h.tab = (int)i;
     }
     return h;
@@ -2041,6 +2141,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_MOUSEMOVE: {
             int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
             g_mouse = POINT{x, y};
+            // v2.5：页签条上按住拖动 → 横向滚动页签（位移超阈值后视为拖拽，不再触发点击选中）
+            if (g_tabDragX > 0 && PtInRect(&g_tabBar, g_mouse)) {
+                int dx = g_tabDragX - x;
+                if (abs(dx) >= 4) {
+                    g_tabDragged = true;
+                    g_tabScroll = g_tabDragScroll + dx;
+                    clampTabScroll();
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
             if (!g_tipTracked) {  // 登记一次，鼠标离开窗口时收 WM_MOUSELEAVE
                 TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
                 TrackMouseEvent(&tme);
@@ -2075,6 +2186,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
+            // v2.5：光标在组页签条上且页签溢出 → 横滑页签（否则会被名单滚动抢走）
+            if (PtInRect(&g_tabBar, pt) && (g_tabMaxX - g_tabViewW) > 0) {
+                int before = g_tabScroll;
+                g_tabScroll += (d > 0 ? -28 : 28);   // 一格约等于一个页签宽
+                clampTabScroll();
+                if (g_tabScroll != before) {
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
             g_scroll += (d > 0 ? -3 : 3);  // 否则翻左栏名单
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
@@ -2091,6 +2212,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_LBUTTONDOWN: {
             int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
             SetFocus(hwnd);  // 把焦点从人数输入框收回来，方便接着用快捷键
+            // v2.5：在组页签条上按下 → 记录起点，若随后拖动则改为横滑而非选中
+            if (PtInRect(&g_tabBar, POINT{x, y})) {
+                g_tabDragX = x;
+                g_tabDragScroll = g_tabScroll;
+            }
             Hit h = hitTest(x, y);
             if (h.big >= 0) {
                 switch (h.big) {
@@ -2143,12 +2269,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 doToggleTheme(hwnd);
                 return 0;
             }
-            if (h.tab >= 0) {
+            if (h.tab >= 0 && !g_tabDragged) {
                 g_scope = h.tab - 1;
                 g_status = (g_scope == -1) ? L"范围：全班" : L"范围：" + g_roster.groupList()[g_scope];
                 InvalidateRect(hwnd, nullptr, FALSE);
-                return 0;
             }
+            if (g_tabDragged) g_tabDragged = false;  // 拖拽结束，这次点击已被吞掉
+            g_tabDragX = 0;   // 松开即结束拖拽状态，下次按下重新记录起点
             if (x >= g_listRect.left && x <= g_listRect.right && y >= g_listRect.top && y <= g_listRect.bottom) {
                 int rowH = 26;
                 int idx = g_scroll + (y - g_listRect.top) / rowH;
